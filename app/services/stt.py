@@ -177,3 +177,4 @@ async def transcribe_stream(
             logger.exception("Deepgram STT connection failed (%s)", type(e).__name__)
         else:
             logger.error("Deepgram STT connection failed: %s: %s", type(e).__name__, msg)
+        raise  # surface to session handler so the WebSocket session closes cleanly
