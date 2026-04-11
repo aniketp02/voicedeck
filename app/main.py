@@ -1,9 +1,18 @@
 import logging
+import warnings
 from contextlib import asynccontextmanager
+
+warnings.filterwarnings(
+    "ignore",
+    message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.",
+    category=UserWarning,
+)
+
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from app.config import settings
+
 from app.api.websocket import handle_session
+from app.config import settings
 
 logging.basicConfig(
     level=settings.log_level,
