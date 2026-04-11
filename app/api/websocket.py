@@ -171,12 +171,12 @@ async def handle_session(websocket: WebSocket) -> None:
         logger.info("Final transcript: %r (confidence=%.2f)", result.text, result.confidence)
 
         if agent_task and not agent_task.done():
-            logger.info("Cancelling previous agent task for new transcript")
+            logger.info("Cancelling previous agent task for new utterance")
             interrupt_event.set()
             agent_task.cancel()
             try:
                 await agent_task
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, Exception):
                 pass
             interrupt_event.clear()
 
@@ -190,7 +190,12 @@ async def handle_session(websocket: WebSocket) -> None:
 
     try:
         async for raw in _receive_loop(websocket):
-            msg = json.loads(raw)
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("Malformed WebSocket message (not JSON): %r", raw[:100])
+                continue
+
             msg_type = msg.get("type")
 
             if msg_type == "audio_chunk":
@@ -201,14 +206,17 @@ async def handle_session(websocket: WebSocket) -> None:
                     logger.warning("Audio queue full — dropping chunk")
 
             elif msg_type == "interrupt":
+                logger.info("Interrupt signal received from client")
                 interrupt_event.set()
-                if agent_task and not agent_task.done():
+                task_was_running = bool(agent_task and not agent_task.done())
+                if task_was_running:
                     agent_task.cancel()
                     try:
                         await agent_task
-                    except asyncio.CancelledError:
+                    except (asyncio.CancelledError, Exception):
                         pass
-                await _send(websocket, {"type": "tts_done"})
+                else:
+                    await _send(websocket, {"type": "tts_done"})
                 interrupt_event.clear()
 
             elif msg_type == "ping":
@@ -216,6 +224,9 @@ async def handle_session(websocket: WebSocket) -> None:
 
             elif msg_type == "start":
                 pass
+
+            else:
+                logger.debug("Unknown message type: %r", msg_type)
 
     except WebSocketDisconnect:
         logger.info("WebSocket session ended by client")
