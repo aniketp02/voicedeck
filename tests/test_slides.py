@@ -45,3 +45,12 @@ def test_slides_summary_contains_keywords():
     assert "recruitment" in summary
     assert "FDA" in summary
     assert "protocol" in summary
+
+
+def test_slides_summary_accepts_explicit_slide_list():
+    from app.slides.drug_discovery import DRUG_DISCOVERY_SLIDES
+
+    summary = slides_summary(DRUG_DISCOVERY_SLIDES)
+    assert "[0]" in summary
+    assert "Drug Discovery Crisis" in summary
+    assert "AlphaFold" in summary

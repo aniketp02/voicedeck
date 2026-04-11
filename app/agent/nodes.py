@@ -8,9 +8,9 @@ Node execution order:
 import logging
 
 from app.agent.state import AgentState
-from app.agent.prompts import UNDERSTAND_SYSTEM, RESPOND_SYSTEM
+from app.agent.prompts import understand_system, RESPOND_SYSTEM
 from app.services.llm import chat_completion, chat_completion_json
-from app.slides.content import SLIDES, get_slide
+from app.slides.presentations import get_presentation
 
 logger = logging.getLogger(__name__)
 
@@ -22,25 +22,30 @@ async def understand_node(state: AgentState) -> dict:
 
     Returns: should_navigate (bool), target_slide (int | None)
     """
+    presentation = get_presentation(state["presentation_id"])
+    slides = presentation.slides
+
     user_msg = (
         f"Current slide index: {state['current_slide']}\n"
         f"User said: {state['transcript']}"
     )
 
-    result = await chat_completion_json(UNDERSTAND_SYSTEM, user_msg)
+    system = understand_system(slides)
+    result = await chat_completion_json(system, user_msg)
 
     should_nav = bool(result.get("should_navigate", False))
     target = result.get("target_slide")
     intent = result.get("intent_summary", "")
 
-    # Validate target index is in bounds
+    # Validate target index is in bounds for this presentation
     if should_nav and target is not None:
         try:
             target = int(target)
-            if not (0 <= target < len(SLIDES)):
+            if not (0 <= target < len(slides)):
                 logger.warning(
-                    "LLM returned out-of-range slide index %d — ignoring navigation",
+                    "LLM returned out-of-range slide index %d (presentation has %d slides) — ignoring",
                     target,
+                    len(slides),
                 )
                 should_nav = False
                 target = None
@@ -87,7 +92,8 @@ async def respond_node(state: AgentState) -> dict:
     Generate spoken response text for the current slide using OpenAI.
     Uses the slide's speaker_notes as knowledge base (not read verbatim).
     """
-    slide = get_slide(state["current_slide"])
+    presentation = get_presentation(state["presentation_id"])
+    slide = presentation.slides[state["current_slide"]]
 
     system = RESPOND_SYSTEM.format(
         slide_index=slide.index,

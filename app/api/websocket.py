@@ -6,7 +6,7 @@ One WebSocket connection = one presentation session.
 
 Message protocol:
   Client -> Server:
-    {"type": "start"}
+    {"type": "start", "presentation_id": "<optional id>"}
     {"type": "audio_chunk", "data": "<base64 PCM 16kHz mono int16>"}
     {"type": "interrupt"}
     {"type": "ping"}
@@ -32,7 +32,7 @@ from app.agent.graph import agent_graph
 from app.agent.state import AgentState
 from app.services.stt import transcribe_stream, TranscriptResult
 from app.services.tts import synthesize_stream
-from app.slides.content import get_slide
+from app.slides.presentations import DEFAULT_PRESENTATION_ID, get_presentation
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,8 @@ async def run_agent(
 
         # respond_node clears slide_changed; detect navigation by index change
         if result.get("current_slide") != slide_before:
-            slide = get_slide(state["current_slide"])
+            presentation = get_presentation(state["presentation_id"])
+            slide = presentation.slides[state["current_slide"]]
             await _send(
                 websocket,
                 {
@@ -125,14 +126,17 @@ async def handle_session(websocket: WebSocket) -> None:
 
     Pipeline:
     1. Accept connection
-    2. Send initial slide_change for slide 0
-    3. Start Deepgram STT as background task
-    4. Receive loop: route audio_chunk -> audio_queue, interrupt -> interrupt_event
-    5. on_transcript callback: forward to client; on final -> run_agent (Plan 03)
-    6. Graceful shutdown on disconnect or error
+    2. Wait for {"type": "start", "presentation_id": "..."} from client
+    3. Send initial slide_change for slide 0 of the chosen presentation
+    4. Start Deepgram STT as background task
+    5. Receive loop: route audio_chunk → audio_queue, interrupt → interrupt_event
+    6. on_transcript callback: forward to client; on final → run_agent
+    7. Graceful shutdown on disconnect or error
     """
     await websocket.accept()
     logger.info("WebSocket session started")
+
+    presentation_id = DEFAULT_PRESENTATION_ID
 
     state: AgentState = {
         "current_slide": 0,
@@ -143,18 +147,12 @@ async def handle_session(websocket: WebSocket) -> None:
         "slide_changed": False,
         "interrupted": False,
         "should_navigate": False,
+        "presentation_id": presentation_id,
     }
 
     interrupt_event = asyncio.Event()
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
     agent_task: asyncio.Task | None = None
-
-    initial_slide = get_slide(0)
-    await _send(websocket, {
-        "type": "slide_change",
-        "index": 0,
-        "slide": {"title": initial_slide.title, "bullets": initial_slide.bullets},
-    })
 
     async def on_transcript(result: TranscriptResult) -> None:
         nonlocal agent_task
@@ -223,7 +221,30 @@ async def handle_session(websocket: WebSocket) -> None:
                 await _send(websocket, {"type": "pong"})
 
             elif msg_type == "start":
-                pass
+                requested_id = msg.get("presentation_id", DEFAULT_PRESENTATION_ID)
+                try:
+                    presentation = get_presentation(requested_id)
+                    presentation_id = requested_id
+                except KeyError:
+                    logger.warning(
+                        "Unknown presentation_id %r — using default %r",
+                        requested_id,
+                        DEFAULT_PRESENTATION_ID,
+                    )
+                    presentation = get_presentation(DEFAULT_PRESENTATION_ID)
+
+                state["presentation_id"] = presentation.meta.id
+                initial_slide = presentation.slides[0]
+                await _send(websocket, {
+                    "type": "slide_change",
+                    "index": 0,
+                    "slide": {"title": initial_slide.title, "bullets": initial_slide.bullets},
+                })
+                logger.info(
+                    "Session started: presentation=%r slides=%d",
+                    presentation.meta.id,
+                    presentation.meta.slide_count,
+                )
 
             else:
                 logger.debug("Unknown message type: %r", msg_type)

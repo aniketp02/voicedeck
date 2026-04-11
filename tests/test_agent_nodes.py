@@ -19,6 +19,7 @@ def _make_state(**overrides) -> AgentState:
         "slide_changed": False,
         "interrupted": False,
         "should_navigate": False,
+        "presentation_id": "clinical-trials",
     }
     base.update(overrides)
     return base

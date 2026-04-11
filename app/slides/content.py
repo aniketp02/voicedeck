@@ -128,9 +128,10 @@ def get_slide(index: int) -> Slide:
     raise IndexError(f"Slide index {index} out of range (0-{len(SLIDES)-1})")
 
 
-def slides_summary() -> str:
+def slides_summary(slides: list[Slide] | None = None) -> str:
     """Compact representation for LLM system prompts."""
+    target = slides if slides is not None else SLIDES
     lines = []
-    for s in SLIDES:
+    for s in target:
         lines.append(f"[{s.index}] {s.title} — keywords: {', '.join(s.keywords)}")
     return "\n".join(lines)

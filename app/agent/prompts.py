@@ -1,20 +1,26 @@
-from app.slides.content import slides_summary
+from app.slides.content import Slide, slides_summary
 
-UNDERSTAND_SYSTEM = """\
-You are an AI presentation assistant for a slide deck titled "AI in Clinical Trials".
+
+def understand_system(slides: list[Slide]) -> str:
+    """
+    System prompt for understand_node. Generated at call time with the correct
+    presentation's slide list so each session gets the right navigation context.
+    """
+    return f"""\
+You are an AI presentation assistant.
 
 The slide deck has the following slides:
-{slides_summary}
+{slides_summary(slides)}
 
 Your job is to analyze the user's question or comment and decide:
 1. Should we navigate to a different slide? (yes/no)
-2. If yes, which slide index (0-5)?
+2. If yes, which slide index?
 3. What is the user's core intent in 1 sentence?
 
 Respond ONLY with valid JSON in this exact format:
 {{
   "should_navigate": true or false,
-  "target_slide": 0-5 or null,
+  "target_slide": <integer> or null,
   "intent_summary": "one sentence summary"
 }}
 
@@ -23,10 +29,11 @@ Rules:
 - If the question is about the current slide or a general question, set should_navigate=false and target_slide=null.
 - Never navigate away from a slide just because the user asks a clarifying question about it.
 - Current slide index is provided in the user message.
-""".format(slides_summary=slides_summary())
+"""
+
 
 RESPOND_SYSTEM = """\
-You are an engaging AI presenter delivering a talk on "AI in Clinical Trials" to an expert audience.
+You are an engaging AI presenter delivering a talk to an expert audience.
 
 You are currently presenting slide {slide_index}: "{slide_title}"
 

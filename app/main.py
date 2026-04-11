@@ -58,6 +58,22 @@ async def get_slides():
     ]
 
 
+@app.get("/presentations")
+async def list_presentations_endpoint():
+    """Return all available presentations for the catalog UI."""
+    from app.slides.presentations import list_presentations
+    presentations = list_presentations()
+    return [
+        {
+            "id": p.id,
+            "title": p.title,
+            "description": p.description,
+            "slide_count": p.slide_count,
+        }
+        for p in presentations
+    ]
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await handle_session(websocket)

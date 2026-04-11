@@ -37,12 +37,12 @@ class MockWebSocket:
         return [m["type"] for m in self.sent]
 
 
-class TestInitialSlideOnConnect:
+class TestInitialSlideAfterStart:
     @pytest.mark.asyncio
-    async def test_sends_initial_slide_change_on_connect(self):
+    async def test_sends_slide_change_after_start_message(self):
         from app.api.websocket import handle_session
 
-        ws = MockWebSocket(messages_to_receive=[])
+        ws = MockWebSocket(messages_to_receive=[{"type": "start"}])
 
         # Mock STT to do nothing (no audio chunks sent)
         async def fake_transcribe(audio_queue, on_transcript):
@@ -60,7 +60,7 @@ class TestInitialSlideOnConnect:
     async def test_initial_slide_has_bullets(self):
         from app.api.websocket import handle_session
 
-        ws = MockWebSocket(messages_to_receive=[])
+        ws = MockWebSocket(messages_to_receive=[{"type": "start"}])
 
         async def fake_transcribe(audio_queue, on_transcript):
             await asyncio.sleep(0)
@@ -70,6 +70,24 @@ class TestInitialSlideOnConnect:
 
         slide_msg = ws.sent[0]
         assert len(slide_msg["slide"]["bullets"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_start_with_presentation_id_uses_that_deck(self):
+        from app.api.websocket import handle_session
+        from app.slides.drug_discovery import DRUG_DISCOVERY_SLIDES
+
+        ws = MockWebSocket(
+            messages_to_receive=[{"type": "start", "presentation_id": "drug-discovery"}]
+        )
+
+        async def fake_transcribe(audio_queue, on_transcript):
+            await asyncio.sleep(0)
+
+        with patch("app.api.websocket.transcribe_stream", fake_transcribe):
+            await handle_session(ws)
+
+        assert ws.sent[0]["type"] == "slide_change"
+        assert ws.sent[0]["slide"]["title"] == DRUG_DISCOVERY_SLIDES[0].title
 
 
 class TestPingPong:
@@ -142,6 +160,7 @@ class TestRunAgent:
             "current_slide": 0, "target_slide": None, "messages": [],
             "transcript": "", "response_text": "", "slide_changed": False,
             "interrupted": False, "should_navigate": False,
+            "presentation_id": "clinical-trials",
         }
 
         mock_result = {
@@ -176,6 +195,7 @@ class TestRunAgent:
             "current_slide": 0, "target_slide": None, "messages": [],
             "transcript": "", "response_text": "", "slide_changed": False,
             "interrupted": False, "should_navigate": False,
+            "presentation_id": "clinical-trials",
         }
 
         with patch("app.api.websocket.agent_graph") as mock_graph:
@@ -198,6 +218,7 @@ class TestRunAgent:
             "current_slide": 0, "target_slide": None, "messages": [],
             "transcript": "recruitment", "response_text": "", "slide_changed": False,
             "interrupted": False, "should_navigate": False,
+            "presentation_id": "clinical-trials",
         }
 
         # Graph returns navigation to slide 1
