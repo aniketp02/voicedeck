@@ -4,11 +4,9 @@ LangGraph nodes for the voice agent.
 Node execution order:
   understand_node → (conditional) → navigate_node → respond_node
                   ↘ respond_node (if no navigation needed)
-
-TODO (Plan 03): Implement all nodes.
-See docs/plans/03-langgraph-agent.md for full implementation details.
 """
 import logging
+
 from app.agent.state import AgentState
 from app.agent.prompts import UNDERSTAND_SYSTEM, RESPOND_SYSTEM
 from app.services.llm import chat_completion, chat_completion_json
@@ -19,43 +17,106 @@ logger = logging.getLogger(__name__)
 
 async def understand_node(state: AgentState) -> dict:
     """
-    Uses OpenAI to parse user intent.
-    Sets: should_navigate, target_slide.
+    Use OpenAI to parse user intent from the transcript.
+    Determines whether to navigate to a different slide and which one.
 
-    TODO: Call chat_completion_json with UNDERSTAND_SYSTEM prompt.
-    Pass current_slide and transcript in user message.
-    Return dict updating should_navigate and target_slide fields.
+    Returns: should_navigate (bool), target_slide (int | None)
     """
-    logger.info("understand_node: transcript=%r", state["transcript"])
-    # TODO: implement
-    return {"should_navigate": False, "target_slide": None}
+    user_msg = (
+        f"Current slide index: {state['current_slide']}\n"
+        f"User said: {state['transcript']}"
+    )
+
+    result = await chat_completion_json(UNDERSTAND_SYSTEM, user_msg)
+
+    should_nav = bool(result.get("should_navigate", False))
+    target = result.get("target_slide")
+    intent = result.get("intent_summary", "")
+
+    # Validate target index is in bounds
+    if should_nav and target is not None:
+        try:
+            target = int(target)
+            if not (0 <= target < len(SLIDES)):
+                logger.warning(
+                    "LLM returned out-of-range slide index %d — ignoring navigation",
+                    target,
+                )
+                should_nav = False
+                target = None
+            elif target == state["current_slide"]:
+                # No need to navigate to the same slide
+                should_nav = False
+                target = None
+        except (TypeError, ValueError):
+            logger.warning("LLM returned non-integer target_slide %r — ignoring", target)
+            should_nav = False
+            target = None
+    elif should_nav and target is None:
+        # LLM said navigate but gave no target — ignore
+        should_nav = False
+
+    logger.info(
+        "understand_node: navigate=%s target=%s intent=%r",
+        should_nav, target, intent,
+    )
+
+    return {
+        "should_navigate": should_nav,
+        "target_slide": target,
+    }
 
 
 async def navigate_node(state: AgentState) -> dict:
     """
-    Updates current_slide to target_slide and sets slide_changed=True.
-
-    TODO: Simply set current_slide = target_slide, slide_changed = True.
-    Log the navigation. This node is only reached when should_navigate=True.
+    Update current_slide to target_slide and set slide_changed flag.
+    Only reached when should_navigate=True.
     """
+    prev = state["current_slide"]
     target = state["target_slide"]
-    logger.info("navigate_node: %d → %d", state["current_slide"], target)
-    # TODO: implement
-    return {"current_slide": target, "slide_changed": True}
+    logger.info("navigate_node: slide %d → %d", prev, target)
+
+    return {
+        "current_slide": target,
+        "slide_changed": True,
+    }
 
 
 async def respond_node(state: AgentState) -> dict:
     """
-    Generates spoken response text using the current slide as context.
-
-    TODO: Build RESPOND_SYSTEM prompt with current slide data.
-    Call chat_completion with the user transcript.
-    Return dict with response_text set.
+    Generate spoken response text for the current slide using OpenAI.
+    Uses the slide's speaker_notes as knowledge base (not read verbatim).
     """
     slide = get_slide(state["current_slide"])
-    logger.info("respond_node: slide=%d %r", slide.index, slide.title)
-    # TODO: implement
-    return {"response_text": ""}
+
+    system = RESPOND_SYSTEM.format(
+        slide_index=slide.index,
+        slide_title=slide.title,
+        slide_bullets="\n".join(f"- {b}" for b in slide.bullets),
+        speaker_notes=slide.speaker_notes,
+    )
+
+    # Add navigation context if we just moved to this slide
+    nav_context = ""
+    if state.get("slide_changed"):
+        nav_context = (
+            f"[We just navigated to slide {slide.index} '{slide.title}' "
+            f"in response to the user's question.] "
+        )
+
+    user_msg = f"{nav_context}User: {state['transcript']}"
+
+    response_text = await chat_completion(system, user_msg)
+    logger.info(
+        "respond_node: slide=%d generated %d chars",
+        slide.index,
+        len(response_text),
+    )
+
+    return {
+        "response_text": response_text,
+        "slide_changed": False,  # reset for next turn
+    }
 
 
 def should_navigate(state: AgentState) -> str:

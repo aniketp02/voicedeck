@@ -26,12 +26,97 @@ import json
 import logging
 
 from fastapi import WebSocket, WebSocketDisconnect
+from langchain_core.messages import AIMessage, HumanMessage
 
+from app.agent.graph import agent_graph
 from app.agent.state import AgentState
 from app.services.stt import transcribe_stream, TranscriptResult
+from app.services.tts import synthesize_stream
 from app.slides.content import get_slide
 
 logger = logging.getLogger(__name__)
+
+
+async def run_agent(
+    websocket: WebSocket,
+    state: AgentState,
+    transcript: str,
+    interrupt_event: asyncio.Event,
+) -> None:
+    """
+    Run the LangGraph agent pipeline for one user utterance.
+
+    Merges graph output into session state, sends slide_change when the slide
+    index changes, agent_text, streaming tts_chunk messages, then tts_done.
+    """
+    tts_done_sent = False
+    try:
+        state["messages"] = state["messages"] + [HumanMessage(content=transcript)]
+        state["transcript"] = transcript
+        state["slide_changed"] = False
+        state["should_navigate"] = False
+        state["target_slide"] = None
+
+        slide_before = state["current_slide"]
+
+        result = await agent_graph.ainvoke(state)
+
+        for key in (
+            "current_slide",
+            "target_slide",
+            "should_navigate",
+            "response_text",
+            "slide_changed",
+            "messages",
+        ):
+            if key in result:
+                state[key] = result[key]
+
+        # respond_node clears slide_changed; detect navigation by index change
+        if result.get("current_slide") != slide_before:
+            slide = get_slide(state["current_slide"])
+            await _send(
+                websocket,
+                {
+                    "type": "slide_change",
+                    "index": state["current_slide"],
+                    "slide": {"title": slide.title, "bullets": slide.bullets},
+                },
+            )
+            logger.info("Sent slide_change to client: index=%d", state["current_slide"])
+
+        response_text = result.get("response_text", "")
+        if response_text:
+            state["messages"] = state["messages"] + [AIMessage(content=response_text)]
+            await _send(websocket, {"type": "agent_text", "text": response_text})
+            logger.info("Sent agent_text: %d chars", len(response_text))
+
+        if response_text and not interrupt_event.is_set():
+            chunk_count = 0
+            async for chunk in synthesize_stream(response_text, interrupt_event):
+                chunk_count += 1
+                await _send(
+                    websocket,
+                    {
+                        "type": "tts_chunk",
+                        "data": base64.b64encode(chunk).decode(),
+                    },
+                )
+            logger.info("Streamed %d TTS chunks to client", chunk_count)
+
+        await _send(websocket, {"type": "tts_done"})
+        tts_done_sent = True
+
+    except asyncio.CancelledError:
+        logger.info("run_agent cancelled (interrupt or new transcript)")
+        raise
+    except Exception as e:
+        logger.exception("run_agent error: %s", e)
+        await _send(websocket, {"type": "error", "message": f"Agent error: {e}"})
+        raise
+    finally:
+        if not tts_done_sent:
+            await _send(websocket, {"type": "tts_done"})
 
 
 async def handle_session(websocket: WebSocket) -> None:
@@ -96,7 +181,7 @@ async def handle_session(websocket: WebSocket) -> None:
             interrupt_event.clear()
 
         agent_task = asyncio.create_task(
-            _agent_stub(websocket, state, result.text, interrupt_event)
+            run_agent(websocket, state, result.text, interrupt_event)
         )
 
     stt_task = asyncio.create_task(
@@ -171,24 +256,6 @@ async def _receive_loop(websocket: WebSocket):
             if "not connected" in str(e).lower():
                 raise WebSocketDisconnect(code=1000) from e
             raise
-
-
-async def _agent_stub(
-    websocket: WebSocket,
-    state: AgentState,
-    transcript: str,
-    interrupt_event: asyncio.Event,
-) -> None:
-    """
-    Placeholder agent task — replaced in Plan 03.
-    Echoes the transcript back as agent_text so the frontend can be tested.
-    """
-    logger.info("Agent stub called with transcript: %r", transcript)
-    await _send(websocket, {
-        "type": "agent_text",
-        "text": f"[stub] You said: {transcript}",
-    })
-    await _send(websocket, {"type": "tts_done"})
 
 
 async def _send(websocket: WebSocket, payload: dict) -> None:

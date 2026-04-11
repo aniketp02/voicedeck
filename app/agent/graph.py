@@ -8,12 +8,7 @@ Graph topology:
                            ↓              ↓
                          respond ────────→ END
 
-The synthesize step (TTS) is NOT a graph node — it's handled in the
-WebSocket layer after the graph returns response_text, so we can stream
-audio chunks directly to the WebSocket without going through graph state.
-
-TODO (Plan 03): Wire up the compiled graph.
-See docs/plans/03-langgraph-agent.md.
+TTS runs outside the graph (WebSocket layer, Plan 04).
 """
 from langgraph.graph import StateGraph, START, END
 from app.agent.state import AgentState
