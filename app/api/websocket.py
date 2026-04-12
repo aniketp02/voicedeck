@@ -70,8 +70,8 @@ async def run_agent(
     to TTS immediately. This lets audio start after the first sentence (~500ms)
     rather than waiting for the full response (~1500ms).
 
-    agent_text is sent with the complete accumulated response after all TTS
-    chunks so the conversation footer is always consistent.
+    agent_text is sent incrementally (cumulative) after each sentence so the
+    orb and conversation footer display text as soon as audio starts.
     """
     tts_done_sent = False
     try:
@@ -112,6 +112,8 @@ async def run_agent(
             logger.info("Sent slide_change to client: index=%d", state["current_slide"])
 
         # Phase 2: streaming response — sentence by sentence → TTS
+        # Send incremental agent_text after each sentence so the orb and
+        # footer display text as soon as the first audio chunk plays.
         system, user_msg = build_respond_prompt(state)
         response_parts: list[str] = []
         chunk_count = 0
@@ -120,6 +122,7 @@ async def run_agent(
             if interrupt_event.is_set():
                 break
             response_parts.append(sentence)
+            await _send(websocket, {"type": "agent_text", "text": " ".join(response_parts)})
             async for chunk in synthesize_stream(sentence, interrupt_event):
                 chunk_count += 1
                 await _send(
@@ -133,7 +136,6 @@ async def run_agent(
         full_response = " ".join(response_parts)
         if full_response:
             state["messages"] = state["messages"] + [AIMessage(content=full_response)]
-            await _send(websocket, {"type": "agent_text", "text": full_response})
             logger.info(
                 "Streamed %d TTS chunks, sent agent_text: %d chars (%d sentences)",
                 chunk_count,
