@@ -106,6 +106,24 @@ class TestUnderstandNode:
         assert result["should_navigate"] is False
         assert result["target_slide"] is None
 
+    @pytest.mark.asyncio
+    async def test_normalizes_one_based_echo_from_llm(self):
+        """LLM returns 5 for 'fifth slide'; we store index 4."""
+        state = _make_state(
+            current_slide=0,
+            transcript="go to the fifth slide",
+        )
+        mock_response = {
+            "should_navigate": True,
+            "target_slide": 5,
+            "intent_summary": "Navigate to fifth slide",
+        }
+        with patch("app.agent.nodes.chat_completion_json", AsyncMock(return_value=mock_response)):
+            result = await understand_node(state)
+
+        assert result["should_navigate"] is True
+        assert result["target_slide"] == 4
+
 
 # ---------------------------------------------------------------------------
 # navigate_node

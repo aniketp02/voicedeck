@@ -7,6 +7,7 @@ Node execution order:
 """
 import logging
 
+from app.agent.slide_target import normalize_slide_target
 from app.agent.state import AgentState
 from app.agent.prompts import understand_system, RESPOND_SYSTEM
 from app.services.llm import chat_completion, chat_completion_json
@@ -41,6 +42,9 @@ async def understand_node(state: AgentState) -> dict:
     if should_nav and target is not None:
         try:
             target = int(target)
+            target = normalize_slide_target(
+                state["transcript"], target, len(slides)
+            )
             if not (0 <= target < len(slides)):
                 logger.warning(
                     "LLM returned out-of-range slide index %d (presentation has %d slides) — ignoring",

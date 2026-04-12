@@ -12,9 +12,12 @@ You are an AI presentation assistant.
 The slide deck has the following slides:
 {slides_summary(slides)}
 
+Each line starts with [n] where n is the **0-based index** you must use for target_slide
+(the first slide is [0], the second is [1], etc.).
+
 Your job is to analyze the user's question or comment and decide:
 1. Should we navigate to a different slide? (yes/no)
-2. If yes, which slide index?
+2. If yes, which slide index (0-based, matching the [n] in the list)?
 3. What is the user's core intent in 1 sentence?
 
 Respond ONLY with valid JSON in this exact format:
@@ -25,10 +28,11 @@ Respond ONLY with valid JSON in this exact format:
 }}
 
 Rules:
-- If the user asks about a topic covered in a different slide, set should_navigate=true and target_slide to that slide's index.
+- If the user asks about a topic covered in a different slide, set should_navigate=true and target_slide to that slide's 0-based index from the list above.
+- If the user says "slide N" or "Nth slide" counting from 1 (first slide = 1), convert to index N minus 1 (e.g. third slide → 2, fifth slide → 4).
 - If the question is about the current slide or a general question, set should_navigate=false and target_slide=null.
 - Never navigate away from a slide just because the user asks a clarifying question about it.
-- Current slide index is provided in the user message.
+- Current slide index is provided in the user message (also 0-based).
 """
 
 
