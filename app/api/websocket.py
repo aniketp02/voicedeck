@@ -10,15 +10,18 @@ Message protocol:
     {"type": "audio_chunk", "data": "<base64 PCM 16kHz mono int16>"}
     {"type": "interrupt"}
     {"type": "navigate", "index": <int>}   # manual slide change (e.g. keyboard)
+    {"type": "start_auto_narrate"}         # begin autonomous slide-by-slide narration
+    {"type": "stop_auto_narrate"}          # stop auto-narration
     {"type": "ping"}
 
   Server -> Client:
-    {"type": "transcript",   "text": "...", "is_final": bool, "speech_final": bool}
-    {"type": "slide_change", "index": N, "slide": {title, bullets}}
-    {"type": "agent_text",   "text": "..."}
-    {"type": "tts_chunk",    "data": "<base64 MP3>"}
+    {"type": "transcript",          "text": "...", "is_final": bool, "speech_final": bool}
+    {"type": "slide_change",        "index": N, "slide": {title, bullets}}
+    {"type": "agent_text",          "text": "..."}
+    {"type": "tts_chunk",           "data": "<base64 MP3>"}
     {"type": "tts_done"}
-    {"type": "error",        "message": "..."}
+    {"type": "auto_narrate_complete"}      # all slides narrated (or loop stopped)
+    {"type": "error",               "message": "..."}
     {"type": "pong"}
 """
 import asyncio
@@ -30,6 +33,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.graph import agent_graph
+from app.agent.narrate import narrate_slide
 from app.agent.state import AgentState
 from app.services.stt import transcribe_stream, TranscriptResult
 from app.services.tts import synthesize_stream
@@ -163,6 +167,7 @@ async def handle_session(websocket: WebSocket) -> None:
     interrupt_event = asyncio.Event()
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
     agent_task: asyncio.Task | None = None
+    auto_narrate_task: asyncio.Task | None = None
 
     async def on_transcript(result: TranscriptResult) -> None:
         nonlocal agent_task
@@ -198,6 +203,87 @@ async def handle_session(websocket: WebSocket) -> None:
             run_agent(websocket, state, result.text, interrupt_event)
         )
 
+    async def auto_narrate_loop() -> None:
+        """
+        Autonomously narrate each slide from the current position to the end.
+
+        For each slide: sends slide_change, generates narration via LLM, streams
+        TTS, waits 2.5 s (interruptible), then advances.  Sends auto_narrate_complete
+        when it reaches the last slide or is cancelled externally.
+        """
+        tts_done_sent = False
+        try:
+            presentation = get_presentation(state["presentation_id"])
+            slides = presentation.slides
+            prev_slide = None
+
+            for idx in range(state["current_slide"], len(slides)):
+                if interrupt_event.is_set():
+                    break
+
+                # Advance to next slide (skip the first iteration if already there)
+                if idx != state["current_slide"] or prev_slide is not None:
+                    state["current_slide"] = idx
+                    slide = slides[idx]
+                    await _send(websocket, {
+                        "type": "slide_change",
+                        "index": idx,
+                        "slide": {"title": slide.title, "bullets": slide.bullets},
+                    })
+                    logger.info("auto_narrate: slide_change → %d", idx)
+
+                if interrupt_event.is_set():
+                    break
+
+                slide = slides[state["current_slide"]]
+
+                # Generate narration text
+                text = await narrate_slide(slide, presentation, prev_slide)
+                if not text or interrupt_event.is_set():
+                    break
+
+                await _send(websocket, {"type": "agent_text", "text": text})
+
+                # Stream TTS
+                chunk_count = 0
+                tts_done_sent = False
+                async for chunk in synthesize_stream(text, interrupt_event):
+                    chunk_count += 1
+                    await _send(websocket, {
+                        "type": "tts_chunk",
+                        "data": base64.b64encode(chunk).decode(),
+                    })
+                logger.info("auto_narrate: streamed %d TTS chunks for slide %d", chunk_count, idx)
+
+                await _send(websocket, {"type": "tts_done"})
+                tts_done_sent = True
+
+                if interrupt_event.is_set():
+                    break
+
+                # Interruptible 2.5 s pause between slides
+                for _ in range(25):
+                    if interrupt_event.is_set():
+                        break
+                    await asyncio.sleep(0.1)
+
+                if interrupt_event.is_set():
+                    break
+
+                prev_slide = slide
+
+        except asyncio.CancelledError:
+            logger.info("auto_narrate_loop: cancelled")
+            raise
+        except Exception as e:
+            logger.exception("auto_narrate_loop error: %s", e)
+            await _send(websocket, {"type": "error", "message": f"Auto-narration error: {e}"})
+        finally:
+            if not tts_done_sent:
+                await _send(websocket, {"type": "tts_done"})
+            await _send(websocket, {"type": "auto_narrate_complete"})
+            logger.info("auto_narrate_loop: complete")
+
     stt_task = asyncio.create_task(
         transcribe_stream(audio_queue, on_transcript)
     )
@@ -223,14 +309,21 @@ async def handle_session(websocket: WebSocket) -> None:
                 logger.info("Interrupt signal received from client")
                 state["interrupted"] = True
                 interrupt_event.set()
-                task_was_running = bool(agent_task and not agent_task.done())
-                if task_was_running:
+                agent_running = bool(agent_task and not agent_task.done())
+                narrate_running = bool(auto_narrate_task and not auto_narrate_task.done())
+                if agent_running:
                     agent_task.cancel()
                     try:
                         await agent_task
                     except (asyncio.CancelledError, Exception):
                         pass
-                else:
+                if narrate_running:
+                    auto_narrate_task.cancel()
+                    try:
+                        await auto_narrate_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if not agent_running and not narrate_running:
                     await _send(websocket, {"type": "tts_done"})
                 interrupt_event.clear()
 
@@ -262,6 +355,32 @@ async def handle_session(websocket: WebSocket) -> None:
                     presentation.meta.id,
                     presentation.meta.slide_count,
                 )
+
+            elif msg_type == "start_auto_narrate":
+                logger.info("start_auto_narrate received")
+                # Cancel any in-flight agent or narration task first
+                interrupt_event.set()
+                for task in (agent_task, auto_narrate_task):
+                    if task and not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                interrupt_event.clear()
+                state["interrupted"] = False
+                auto_narrate_task = asyncio.create_task(auto_narrate_loop())
+
+            elif msg_type == "stop_auto_narrate":
+                logger.info("stop_auto_narrate received")
+                interrupt_event.set()
+                if auto_narrate_task and not auto_narrate_task.done():
+                    auto_narrate_task.cancel()
+                    try:
+                        await auto_narrate_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                interrupt_event.clear()
 
             elif msg_type == "navigate":
                 # Client-initiated manual slide navigation (keyboard arrow keys).
@@ -320,6 +439,13 @@ async def handle_session(websocket: WebSocket) -> None:
             agent_task.cancel()
             try:
                 await agent_task
+            except asyncio.CancelledError:
+                pass
+
+        if auto_narrate_task and not auto_narrate_task.done():
+            auto_narrate_task.cancel()
+            try:
+                await auto_narrate_task
             except asyncio.CancelledError:
                 pass
 
