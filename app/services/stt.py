@@ -82,7 +82,7 @@ async def transcribe_stream(
             language=settings.deepgram_language,
             smart_format="true",
             interim_results="true",
-            utterance_end_ms=1200,
+            utterance_end_ms=settings.deepgram_utterance_end_ms,
             vad_events="true",
             encoding="linear16",
             sample_rate=16000,

@@ -10,6 +10,7 @@ import logging
 from app.agent.slide_target import normalize_slide_target
 from app.agent.state import AgentState
 from app.agent.prompts import understand_system, RESPOND_SYSTEM
+from app.config import settings
 from app.services.llm import chat_completion, chat_completion_json
 from app.slides.presentations import get_presentation
 
@@ -32,7 +33,7 @@ async def understand_node(state: AgentState) -> dict:
     )
 
     system = understand_system(slides)
-    result = await chat_completion_json(system, user_msg)
+    result = await chat_completion_json(system, user_msg, model=settings.openai_understand_model)
 
     should_nav = bool(result.get("should_navigate", False))
     target = result.get("target_slide")

@@ -35,11 +35,11 @@ def get_client() -> AsyncOpenAI:
     return _client
 
 
-async def chat_completion(system: str, user: str) -> str:
+async def chat_completion(system: str, user: str, model: str | None = None) -> str:
     """Single-turn completion. Returns the assistant message text."""
     client = get_client()
     response = await client.chat.completions.create(
-        model=settings.openai_model,
+        model=model or settings.openai_model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -49,11 +49,11 @@ async def chat_completion(system: str, user: str) -> str:
     return response.choices[0].message.content or ""
 
 
-async def chat_completion_json(system: str, user: str) -> dict:
+async def chat_completion_json(system: str, user: str, model: str | None = None) -> dict:
     """Completion that expects and parses JSON response."""
     client = get_client()
     response = await client.chat.completions.create(
-        model=settings.openai_model,
+        model=model or settings.openai_model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},

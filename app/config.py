@@ -8,7 +8,8 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4.1-mini"
+    openai_understand_model: str = "gpt-4.1-mini"
 
     # Deepgram (STT + optional TTS)
     deepgram_api_key: str
@@ -19,6 +20,10 @@ class Settings(BaseSettings):
     # local issuer") even with certifi. Default False = verify=False (works locally). Set True in
     # production when the host trust store validates api.deepgram.com.
     deepgram_tts_ssl_verify: bool = False
+    # Milliseconds of silence after speech before Deepgram fires speech_final.
+    # 1200ms fires on natural mid-sentence pauses; 2000ms is more robust for
+    # users who pause mid-thought before completing their question.
+    deepgram_utterance_end_ms: int = 2000
 
     # ElevenLabs (optional — only required when TTS_PROVIDER=elevenlabs)
     elevenlabs_api_key: str = ""
