@@ -163,23 +163,19 @@ class TestRunAgent:
             "presentation_id": "clinical-trials",
         }
 
-        mock_result = {
+        routing_result = {
             "current_slide": 0, "target_slide": None, "should_navigate": False,
-            "response_text": "Test response text.", "slide_changed": False,
-            "messages": [],
+            "slide_changed": False, "messages": [],
         }
 
-        with patch("app.api.websocket.agent_graph") as mock_graph, \
-             patch("app.api.websocket.synthesize_stream") as mock_tts:
-            mock_graph.ainvoke = AsyncMock(return_value=mock_result)
+        async def no_sentences(token_gen):
+            return
+            yield  # make it an async generator
 
-            # TTS yields no chunks
-            async def empty_tts(text, event):
-                return
-                yield  # make it an async generator
-
-            mock_tts.return_value = empty_tts("", interrupt)
-
+        with patch("app.api.websocket.routing_graph") as mock_graph, \
+             patch("app.api.websocket.sentence_stream", side_effect=no_sentences), \
+             patch("app.api.websocket.synthesize_stream"):
+            mock_graph.ainvoke = AsyncMock(return_value=routing_result)
             await run_agent(ws, state, "hello", interrupt)
 
         assert "tts_done" in ws.sent_types()
@@ -198,13 +194,13 @@ class TestRunAgent:
             "presentation_id": "clinical-trials",
         }
 
-        with patch("app.api.websocket.agent_graph") as mock_graph:
+        with patch("app.api.websocket.routing_graph") as mock_graph:
             mock_graph.ainvoke = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
             with pytest.raises(RuntimeError):
                 await run_agent(ws, state, "hello", interrupt)
 
-        # tts_done must still have been sent
+        # tts_done must still have been sent (from finally block)
         assert "tts_done" in ws.sent_types()
 
     @pytest.mark.asyncio
@@ -221,26 +217,26 @@ class TestRunAgent:
             "presentation_id": "clinical-trials",
         }
 
-        # Graph returns navigation to slide 1
-        mock_result = {
-            "current_slide": 1,  # changed from 0
+        # Routing graph returns navigation to slide 1
+        routing_result = {
+            "current_slide": 1,
             "target_slide": 1,
             "should_navigate": True,
-            "response_text": "Patient recruitment response",
-            "slide_changed": False,  # respond_node resets this
+            "slide_changed": False,
             "messages": [],
         }
 
-        with patch("app.api.websocket.agent_graph") as mock_graph, \
-             patch("app.api.websocket.synthesize_stream") as mock_tts:
-            mock_graph.ainvoke = AsyncMock(return_value=mock_result)
+        async def one_sentence(token_gen):
+            yield "Patient recruitment response."
 
-            async def empty_tts(text, event):
-                return
-                yield
+        async def empty_tts(text, event):
+            return
+            yield
 
-            mock_tts.return_value = empty_tts("", interrupt)
-
+        with patch("app.api.websocket.routing_graph") as mock_graph, \
+             patch("app.api.websocket.sentence_stream", side_effect=one_sentence), \
+             patch("app.api.websocket.synthesize_stream", side_effect=empty_tts):
+            mock_graph.ainvoke = AsyncMock(return_value=routing_result)
             await run_agent(ws, state, "recruitment", interrupt)
 
         types = ws.sent_types()

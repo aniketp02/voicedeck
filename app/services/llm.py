@@ -1,6 +1,8 @@
 import json
 import logging
+import re
 import ssl
+from collections.abc import AsyncGenerator
 
 import httpx
 from openai import AsyncOpenAI
@@ -47,6 +49,56 @@ async def chat_completion(system: str, user: str, model: str | None = None) -> s
         temperature=0.7,
     )
     return response.choices[0].message.content or ""
+
+
+async def chat_completion_stream(
+    system: str, user: str, model: str | None = None
+) -> AsyncGenerator[str, None]:
+    """Yield raw token strings from the OpenAI streaming API."""
+    client = get_client()
+    response = await client.chat.completions.create(
+        model=model or settings.openai_model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.7,
+        stream=True,
+    )
+    async for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_MIN_FLUSH_CHARS = 20
+
+
+async def sentence_stream(
+    token_gen: AsyncGenerator[str, None],
+) -> AsyncGenerator[str, None]:
+    """
+    Accumulate raw tokens into sentence-length chunks for streaming TTS.
+
+    Splits on . ! ? followed by whitespace. Buffers until at least
+    _MIN_FLUSH_CHARS characters have accumulated before splitting, to avoid
+    flushing trivially short fragments. Yields any remainder at end of stream.
+    """
+    buf = ""
+    async for token in token_gen:
+        buf += token
+        if len(buf) < _MIN_FLUSH_CHARS:
+            continue
+        parts = _SENTENCE_SPLIT.split(buf)
+        # parts[-1] is the incomplete trailing fragment (no sentence-ending yet)
+        for sentence in parts[:-1]:
+            stripped = sentence.strip()
+            if stripped:
+                yield stripped
+        buf = parts[-1]
+    if buf.strip():
+        yield buf.strip()
 
 
 async def chat_completion_json(system: str, user: str, model: str | None = None) -> dict:

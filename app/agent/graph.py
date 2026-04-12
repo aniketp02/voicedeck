@@ -35,5 +35,32 @@ def build_graph():
     return builder.compile()
 
 
-# Module-level compiled graph — import this in the WebSocket handler
+def build_routing_graph():
+    """
+    Routing-only graph: understand + navigate, no respond node.
+
+    Used by the WebSocket handler for streaming generation — the handler runs
+    intent parsing and navigation here, then streams the LLM response directly
+    (sentence by sentence → TTS) without going back into the graph.
+
+    Keeping agent_graph intact means all 77 existing tests remain unaffected.
+    """
+    builder = StateGraph(AgentState)
+
+    builder.add_node("understand", understand_node)
+    builder.add_node("navigate", navigate_node)
+
+    builder.add_edge(START, "understand")
+    builder.add_conditional_edges(
+        "understand",
+        should_navigate,
+        {"navigate": "navigate", "respond": END},
+    )
+    builder.add_edge("navigate", END)
+
+    return builder.compile()
+
+
+# Module-level compiled graphs — import these in the WebSocket handler
 agent_graph = build_graph()
+routing_graph = build_routing_graph()

@@ -7,9 +7,10 @@ intent parsing or slide navigation — just a high-quality narration of the
 current slide, optionally bridging from the previous one.
 """
 import logging
+from collections.abc import AsyncGenerator
 
 from app.agent.prompts import NARRATE_SYSTEM
-from app.services.llm import chat_completion
+from app.services.llm import chat_completion, chat_completion_stream, sentence_stream
 from app.slides.content import Slide
 from app.slides.presentations import Presentation
 
@@ -57,3 +58,48 @@ async def narrate_slide(
         len(text),
     )
     return text
+
+
+async def narrate_slide_stream(
+    slide: Slide,
+    presentation: Presentation,
+    prev_slide: Slide | None = None,
+) -> AsyncGenerator[str, None]:
+    """
+    Stream spoken narration for a slide as sentence-length chunks.
+
+    Used by auto_narrate_loop (non-prefetch path) so TTS can start after the
+    first sentence rather than waiting for the full LLM response.
+
+    Args:
+        slide:        The slide to narrate.
+        presentation: The full presentation (for title context).
+        prev_slide:   Previous slide, if any, for a natural transition bridge.
+
+    Yields:
+        Sentence-length strings ready for TTS.
+    """
+    transition_block = ""
+    if prev_slide is not None:
+        transition_block = (
+            f'[TRANSITION: You just finished "{prev_slide.title}". '
+            f"Open with a natural bridge connecting that topic to this one — "
+            f"make it feel like one flowing talk, not a hard cut.]\n\n"
+        )
+
+    system = NARRATE_SYSTEM.format(
+        presentation_title=presentation.meta.title,
+        slide_index=slide.index,
+        slide_title=slide.title,
+        slide_bullets="\n".join(f"- {b}" for b in slide.bullets),
+        speaker_notes=slide.speaker_notes,
+        transition_block=transition_block,
+    )
+
+    logger.info(
+        "narrate_slide_stream: slide=%d prev=%s",
+        slide.index,
+        prev_slide.index if prev_slide else None,
+    )
+    async for sentence in sentence_stream(chat_completion_stream(system, "Narrate this slide.")):
+        yield sentence

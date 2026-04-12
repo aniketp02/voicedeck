@@ -17,6 +17,7 @@ from app.services.llm import chat_completion, chat_completion_json
 from app.slides.presentations import get_presentation
 
 
+
 def _format_history(messages: list, limit: int = 8) -> str:
     """
     Format the last `limit` messages from the chat history as a readable
@@ -128,25 +129,21 @@ async def navigate_node(state: AgentState) -> dict:
     }
 
 
-async def respond_node(state: AgentState) -> dict:
+def build_respond_prompt(state: AgentState) -> tuple[str, str]:
     """
-    Generate spoken response text for the current slide using OpenAI.
-    Uses the slide's speaker_notes as knowledge base (not read verbatim).
-    When end_session is True, generates a brief sign-off instead.
+    Build the system and user prompts for the respond step.
+
+    Shared by respond_node (graph path) and the streaming generation path in
+    websocket.py so prompt construction stays in one place.
+
+    Returns:
+        (system_prompt, user_message)
     """
     presentation = get_presentation(state["presentation_id"])
 
-    # Handle graceful session close — use a brief signoff instead of content
     if state.get("end_session"):
         system = SIGNOFF_SYSTEM.format(presentation_title=presentation.meta.title)
-        response_text = await chat_completion(system, "Wrap up the session.", model=settings.openai_model)
-        logger.info("respond_node: end_session signoff — %d chars", len(response_text))
-        return {
-            "response_text": response_text,
-            "slide_changed": False,
-            "interrupted": False,
-            "end_session": False,
-        }
+        return system, "Wrap up the session."
 
     slide = presentation.slides[state["current_slide"]]
 
@@ -164,8 +161,6 @@ async def respond_node(state: AgentState) -> dict:
         )
     context_block = ("\n".join(context_lines) + "\n\n") if context_lines else ""
 
-    # Inject next slide hint for proactive turn-ending (Option B in RESPOND_SYSTEM).
-    # Only provided when a next slide exists; empty string disables the Option B rule.
     next_idx = slide.index + 1
     next_slide_hint = (
         f'"{presentation.slides[next_idx].title}" '
@@ -187,15 +182,34 @@ async def respond_node(state: AgentState) -> dict:
     )
 
     user_msg = f"User: {state['transcript']}"
+    return system, user_msg
 
+
+async def respond_node(state: AgentState) -> dict:
+    """
+    Generate spoken response text for the current slide using OpenAI.
+    Uses the slide's speaker_notes as knowledge base (not read verbatim).
+    When end_session is True, generates a brief sign-off instead.
+    """
+    is_end_session = bool(state.get("end_session"))
+    system, user_msg = build_respond_prompt(state)
     response_text = await chat_completion(system, user_msg)
+
+    if is_end_session:
+        logger.info("respond_node: end_session signoff — %d chars", len(response_text))
+        return {
+            "response_text": response_text,
+            "slide_changed": False,
+            "interrupted": False,
+            "end_session": False,
+        }
+
     logger.info(
         "respond_node: slide=%d interrupted=%s generated %d chars",
-        slide.index,
+        state["current_slide"],
         state.get("interrupted", False),
         len(response_text),
     )
-
     return {
         "response_text": response_text,
         "slide_changed": False,

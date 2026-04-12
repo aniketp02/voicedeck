@@ -33,9 +33,11 @@ import logging
 from fastapi import WebSocket, WebSocketDisconnect
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.graph import agent_graph
-from app.agent.narrate import narrate_slide
+from app.agent.graph import agent_graph, routing_graph
+from app.agent.narrate import narrate_slide, narrate_slide_stream
+from app.agent.nodes import build_respond_prompt
 from app.agent.state import AgentState
+from app.services.llm import chat_completion_stream, sentence_stream
 from app.services.stt import transcribe_stream, TranscriptResult
 from app.services.tts import synthesize_stream
 from app.slides.presentations import DEFAULT_PRESENTATION_ID, get_presentation
@@ -58,10 +60,18 @@ async def run_agent(
     interrupt_event: asyncio.Event,
 ) -> None:
     """
-    Run the LangGraph agent pipeline for one user utterance.
+    Run the agent pipeline for one user utterance with streaming LLM → TTS.
 
-    Merges graph output into session state, sends slide_change when the slide
-    index changes, agent_text, streaming tts_chunk messages, then tts_done.
+    Phase 1 — routing: uses routing_graph (understand + navigate) to resolve
+    intent and any slide navigation without blocking on response generation.
+
+    Phase 2 — streaming: builds the respond prompt from state, then streams
+    tokens from the LLM, splits them into sentences, and pipes each sentence
+    to TTS immediately. This lets audio start after the first sentence (~500ms)
+    rather than waiting for the full response (~1500ms).
+
+    agent_text is sent with the complete accumulated response after all TTS
+    chunks so the conversation footer is always consistent.
     """
     tts_done_sent = False
     try:
@@ -73,14 +83,14 @@ async def run_agent(
 
         slide_before = state["current_slide"]
 
-        result = await agent_graph.ainvoke(state)
+        # Phase 1: routing (understand + optional navigate) — no respond node
+        result = await routing_graph.ainvoke(state)
 
         for key in (
             "current_slide",
             "target_slide",
             "should_navigate",
             "end_session",
-            "response_text",
             "slide_changed",
             "interrupted",
             "messages",
@@ -88,8 +98,7 @@ async def run_agent(
             if key in result:
                 state[key] = result[key]
 
-        # respond_node clears slide_changed; detect navigation by index change
-        if result.get("current_slide") != slide_before:
+        if result.get("current_slide", slide_before) != slide_before:
             presentation = get_presentation(state["presentation_id"])
             slide = presentation.slides[state["current_slide"]]
             await _send(
@@ -102,15 +111,16 @@ async def run_agent(
             )
             logger.info("Sent slide_change to client: index=%d", state["current_slide"])
 
-        response_text = result.get("response_text", "")
-        if response_text:
-            state["messages"] = state["messages"] + [AIMessage(content=response_text)]
-            await _send(websocket, {"type": "agent_text", "text": response_text})
-            logger.info("Sent agent_text: %d chars", len(response_text))
+        # Phase 2: streaming response — sentence by sentence → TTS
+        system, user_msg = build_respond_prompt(state)
+        response_parts: list[str] = []
+        chunk_count = 0
 
-        if response_text and not interrupt_event.is_set():
-            chunk_count = 0
-            async for chunk in synthesize_stream(response_text, interrupt_event):
+        async for sentence in sentence_stream(chat_completion_stream(system, user_msg)):
+            if interrupt_event.is_set():
+                break
+            response_parts.append(sentence)
+            async for chunk in synthesize_stream(sentence, interrupt_event):
                 chunk_count += 1
                 await _send(
                     websocket,
@@ -119,7 +129,21 @@ async def run_agent(
                         "data": base64.b64encode(chunk).decode(),
                     },
                 )
-            logger.info("Streamed %d TTS chunks to client", chunk_count)
+
+        full_response = " ".join(response_parts)
+        if full_response:
+            state["messages"] = state["messages"] + [AIMessage(content=full_response)]
+            await _send(websocket, {"type": "agent_text", "text": full_response})
+            logger.info(
+                "Streamed %d TTS chunks, sent agent_text: %d chars (%d sentences)",
+                chunk_count,
+                len(full_response),
+                len(response_parts),
+            )
+
+        # Clear end_session after handling so the next turn starts clean
+        if state.get("end_session"):
+            state["end_session"] = False
 
         await _send(websocket, {"type": "tts_done"})
         tts_done_sent = True
@@ -252,49 +276,65 @@ async def handle_session(websocket: WebSocket) -> None:
 
                 slide = slides[state["current_slide"]]
 
-                # Use pre-generated narration if the prefetch task is done and
-                # was for this exact slide. Otherwise generate synchronously.
-                text: str | None = None
+                # Use pre-generated narration if the prefetch task completed.
+                # Otherwise stream sentences directly — TTS starts after first sentence.
+                prefetched_text: str | None = None
                 if prefetch_task is not None and prefetch_task.done():
                     try:
-                        text = prefetch_task.result()
+                        prefetched_text = prefetch_task.result()
                         logger.info("auto_narrate: using pre-generated narration for slide %d", idx)
                     except Exception as e:
-                        logger.warning("auto_narrate: prefetch failed (%s), regenerating", e)
+                        logger.warning("auto_narrate: prefetch failed (%s), will stream", e)
                     prefetch_task = None
 
-                if not text:
-                    text = await narrate_slide(slide, presentation, prev_slide)
-
-                if not text or interrupt_event.is_set():
+                if interrupt_event.is_set():
                     break
 
-                await _send(websocket, {"type": "agent_text", "text": text})
-
-                # Clear BEFORE streaming so a fast tts_playback_done that arrives
+                # Clear BEFORE any TTS so a fast tts_playback_done that arrives
                 # in the window between tts_done and the wait() call is not lost.
                 playback_done_event.clear()
 
-                # Stream TTS — while chunks are flowing, kick off LLM prefetch for
-                # the next slide so the text is ready before the inter-slide pause ends.
                 chunk_count = 0
                 tts_done_sent = False
-                prefetch_task = None
                 next_idx = idx + 1
                 prefetch_started = False
+                narration_parts: list[str] = []
 
-                async for chunk in synthesize_stream(text, interrupt_event):
-                    chunk_count += 1
-                    await _send(websocket, {
-                        "type": "tts_chunk",
-                        "data": base64.b64encode(chunk).decode(),
-                    })
-                    # Start prefetching next narration after first chunk confirms TTS is healthy
-                    if not prefetch_started and next_idx < len(slides):
-                        prefetch_started = True
-                        prefetch_task = asyncio.create_task(
-                            narrate_slide(slides[next_idx], presentation, slide)
-                        )
+                if prefetched_text:
+                    # Prefetch available: TTS the full text, start new prefetch during streaming
+                    narration_parts = [prefetched_text]
+                    async for chunk in synthesize_stream(prefetched_text, interrupt_event):
+                        chunk_count += 1
+                        await _send(websocket, {
+                            "type": "tts_chunk",
+                            "data": base64.b64encode(chunk).decode(),
+                        })
+                        if not prefetch_started and next_idx < len(slides):
+                            prefetch_started = True
+                            prefetch_task = asyncio.create_task(
+                                narrate_slide(slides[next_idx], presentation, slide)
+                            )
+                else:
+                    # No prefetch: stream sentences → TTS each sentence
+                    async for sentence in narrate_slide_stream(slide, presentation, prev_slide):
+                        if interrupt_event.is_set():
+                            break
+                        narration_parts.append(sentence)
+                        async for chunk in synthesize_stream(sentence, interrupt_event):
+                            chunk_count += 1
+                            await _send(websocket, {
+                                "type": "tts_chunk",
+                                "data": base64.b64encode(chunk).decode(),
+                            })
+                            if not prefetch_started and next_idx < len(slides):
+                                prefetch_started = True
+                                prefetch_task = asyncio.create_task(
+                                    narrate_slide(slides[next_idx], presentation, slide)
+                                )
+
+                full_narration = " ".join(narration_parts)
+                if full_narration and not interrupt_event.is_set():
+                    await _send(websocket, {"type": "agent_text", "text": full_narration})
 
                 logger.info("auto_narrate: streamed %d TTS chunks for slide %d", chunk_count, idx)
 
