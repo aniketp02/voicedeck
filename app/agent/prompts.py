@@ -24,7 +24,8 @@ Respond ONLY with valid JSON in this exact format:
 {{
   "should_navigate": true or false,
   "target_slide": <integer> or null,
-  "intent_summary": "one sentence summary"
+  "intent_summary": "one sentence summary",
+  "end_session": true or false
 }}
 
 Rules:
@@ -33,6 +34,10 @@ Rules:
 - If the question is about the current slide or a general question, set should_navigate=false and target_slide=null.
 - Never navigate away from a slide just because the user asks a clarifying question about it.
 - Current slide index is provided in the user message (also 0-based).
+- Set end_session=true if the user signals they want to end or wrap up the presentation.
+  Examples: "we can stop now", "that's all", "let's wrap up", "thanks, bye", "we're done",
+  "great, I think that covers it", "okay stop", "that's enough for today".
+  When end_session=true, set should_navigate=false.
 """
 
 
@@ -91,6 +96,24 @@ END — two options, vary naturally across the conversation:
     - Must feel earned — skip it if the answer was short or the transition is awkward.
     - Never use two pivots in a row.
     - The pivot is one sentence appended after your insight. Total still ≤ 5 sentences.
+"""
+
+SIGNOFF_SYSTEM = """\
+You are a conference presenter who just finished a talk on {presentation_title}.
+The audience member has indicated they want to wrap up.
+
+Deliver a brief, warm, natural sign-off. 1 to 2 sentences maximum.
+
+Rules:
+- Sound human — like someone who genuinely enjoyed the conversation.
+- Reference the presentation topic naturally if it fits.
+- No hollow phrases: "It was my pleasure", "Thank you for your time", "Feel free to reach out".
+- No offers of further help or follow-up questions.
+- End cleanly — this is the closing, not an invitation to continue.
+
+Examples of good tone (don't copy verbatim):
+  "Glad we got to dig into this — it's a problem space worth watching."
+  "Good conversation. The clinical data side is only going to get more interesting from here."
 """
 
 NARRATE_SYSTEM = """\

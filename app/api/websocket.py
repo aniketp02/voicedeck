@@ -79,6 +79,7 @@ async def run_agent(
             "current_slide",
             "target_slide",
             "should_navigate",
+            "end_session",
             "response_text",
             "slide_changed",
             "interrupted",
@@ -162,6 +163,7 @@ async def handle_session(websocket: WebSocket) -> None:
         "slide_changed": False,
         "interrupted": False,
         "should_navigate": False,
+        "end_session": False,
         "presentation_id": presentation_id,
     }
 
@@ -248,6 +250,10 @@ async def handle_session(websocket: WebSocket) -> None:
 
                 await _send(websocket, {"type": "agent_text", "text": text})
 
+                # Clear BEFORE streaming so a fast tts_playback_done that arrives
+                # in the window between tts_done and the wait() call is not lost.
+                playback_done_event.clear()
+
                 # Stream TTS
                 chunk_count = 0
                 tts_done_sent = False
@@ -268,7 +274,6 @@ async def handle_session(websocket: WebSocket) -> None:
                 # Wait for the client to signal that local audio playback has ended
                 # before advancing to the next slide. Falls back after 120 s so a
                 # lost message never stalls the loop indefinitely.
-                playback_done_event.clear()
                 playback_task = asyncio.create_task(playback_done_event.wait())
                 interrupt_task = asyncio.create_task(interrupt_event.wait())
                 try:

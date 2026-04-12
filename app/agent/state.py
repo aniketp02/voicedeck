@@ -19,6 +19,7 @@ class AgentState(TypedDict):
     # Control flow
     interrupted: bool                     # set True when client sends interrupt
     should_navigate: bool                 # set by understand_node
+    end_session: bool                     # set True when user signals they want to stop
 
     # Presentation routing
     presentation_id: str                  # which presentation this session uses

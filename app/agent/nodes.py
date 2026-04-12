@@ -9,7 +9,7 @@ import logging
 
 from app.agent.slide_target import normalize_slide_target
 from app.agent.state import AgentState
-from app.agent.prompts import understand_system, RESPOND_SYSTEM
+from app.agent.prompts import understand_system, RESPOND_SYSTEM, SIGNOFF_SYSTEM
 from app.config import settings
 from app.services.llm import chat_completion, chat_completion_json
 from app.slides.presentations import get_presentation
@@ -38,6 +38,7 @@ async def understand_node(state: AgentState) -> dict:
     should_nav = bool(result.get("should_navigate", False))
     target = result.get("target_slide")
     intent = result.get("intent_summary", "")
+    end_session = bool(result.get("end_session", False))
 
     # Validate target index is in bounds for this presentation
     if should_nav and target is not None:
@@ -66,14 +67,19 @@ async def understand_node(state: AgentState) -> dict:
         # LLM said navigate but gave no target — ignore
         should_nav = False
 
+    if end_session:
+        should_nav = False
+        target = None
+
     logger.info(
-        "understand_node: navigate=%s target=%s intent=%r",
-        should_nav, target, intent,
+        "understand_node: navigate=%s target=%s end_session=%s intent=%r",
+        should_nav, target, end_session, intent,
     )
 
     return {
         "should_navigate": should_nav,
         "target_slide": target,
+        "end_session": end_session,
     }
 
 
@@ -96,8 +102,22 @@ async def respond_node(state: AgentState) -> dict:
     """
     Generate spoken response text for the current slide using OpenAI.
     Uses the slide's speaker_notes as knowledge base (not read verbatim).
+    When end_session is True, generates a brief sign-off instead.
     """
     presentation = get_presentation(state["presentation_id"])
+
+    # Handle graceful session close — use a brief signoff instead of content
+    if state.get("end_session"):
+        system = SIGNOFF_SYSTEM.format(presentation_title=presentation.meta.title)
+        response_text = await chat_completion(system, "Wrap up the session.", model=settings.openai_model)
+        logger.info("respond_node: end_session signoff — %d chars", len(response_text))
+        return {
+            "response_text": response_text,
+            "slide_changed": False,
+            "interrupted": False,
+            "end_session": False,
+        }
+
     slide = presentation.slides[state["current_slide"]]
 
     context_lines = []
