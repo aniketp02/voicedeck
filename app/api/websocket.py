@@ -12,6 +12,7 @@ Message protocol:
     {"type": "navigate", "index": <int>}   # manual slide change (e.g. keyboard)
     {"type": "start_auto_narrate"}         # begin autonomous slide-by-slide narration
     {"type": "stop_auto_narrate"}          # stop auto-narration
+    {"type": "tts_playback_done"}          # local audio playback ended (audio.ended event)
     {"type": "ping"}
 
   Server -> Client:
@@ -165,6 +166,9 @@ async def handle_session(websocket: WebSocket) -> None:
     }
 
     interrupt_event = asyncio.Event()
+    # Set by the client's "tts_playback_done" message — used by auto_narrate_loop
+    # to know when the audio element has actually finished playing before advancing.
+    playback_done_event = asyncio.Event()
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
     agent_task: asyncio.Task | None = None
     auto_narrate_task: asyncio.Task | None = None
@@ -261,11 +265,33 @@ async def handle_session(websocket: WebSocket) -> None:
                 if interrupt_event.is_set():
                     break
 
-                # Interruptible 2.5 s pause between slides
-                for _ in range(25):
-                    if interrupt_event.is_set():
-                        break
-                    await asyncio.sleep(0.1)
+                # Wait for the client to signal that local audio playback has ended
+                # before advancing to the next slide. Falls back after 120 s so a
+                # lost message never stalls the loop indefinitely.
+                playback_done_event.clear()
+                playback_task = asyncio.create_task(playback_done_event.wait())
+                interrupt_task = asyncio.create_task(interrupt_event.wait())
+                try:
+                    done, pending = await asyncio.wait(
+                        {playback_task, interrupt_task},
+                        timeout=120.0,
+                    )
+                    for t in pending:
+                        t.cancel()
+                        try:
+                            await t
+                        except asyncio.CancelledError:
+                            pass
+                except asyncio.CancelledError:
+                    playback_task.cancel()
+                    interrupt_task.cancel()
+                    raise
+
+                if interrupt_event.is_set():
+                    break
+
+                # Brief pause after audio ends before advancing to next slide
+                await asyncio.sleep(1.5)
 
                 if interrupt_event.is_set():
                     break
@@ -326,6 +352,11 @@ async def handle_session(websocket: WebSocket) -> None:
                 if not agent_running and not narrate_running:
                     await _send(websocket, {"type": "tts_done"})
                 interrupt_event.clear()
+
+            elif msg_type == "tts_playback_done":
+                # Client's audio element fired the 'ended' event — playback is complete.
+                # Used by auto_narrate_loop to know it's safe to advance to the next slide.
+                playback_done_event.set()
 
             elif msg_type == "ping":
                 await _send(websocket, {"type": "pong"})

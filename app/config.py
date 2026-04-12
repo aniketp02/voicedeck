@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # OpenAI TTS (optional — only required when TTS_PROVIDER=openai)
     openai_tts_voice: str = "nova"   # nova | alloy | echo | fable | onyx | shimmer
     openai_tts_model: str = "tts-1"  # tts-1 | tts-1-hd
+    # Optional separate API key for TTS. Restricted keys need the
+    # "api.model.audio.request" scope — if your OPENAI_API_KEY is restricted
+    # to chat only, set this to a key that has the audio scope (or use an
+    # unrestricted key). Falls back to OPENAI_API_KEY when not set.
+    openai_tts_api_key: str = ""
 
     # TTS provider selection
     # "elevenlabs" — high quality, requires ELEVENLABS_API_KEY (demo mode)

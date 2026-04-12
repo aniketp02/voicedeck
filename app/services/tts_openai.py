@@ -8,17 +8,44 @@ Model:  configured via settings.openai_tts_model  (default: tts-1)
 Voice:  configured via settings.openai_tts_voice  (default: nova)
 Output: mp3 — native output format for tts-1
 
-No extra credentials needed: reuses OPENAI_API_KEY already used for the LLM.
+API key: uses OPENAI_TTS_API_KEY when set, otherwise falls back to OPENAI_API_KEY.
+Restricted keys need the "api.model.audio.request" scope — if your main key is
+restricted to chat completions only, set OPENAI_TTS_API_KEY to a key that has the
+audio scope (or an unrestricted key).
 """
 import asyncio
 import logging
+import ssl
+
+import httpx
+from openai import AsyncOpenAI
 
 from app.config import settings
-from app.services.llm import get_client
 
 logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 8192  # 8 KB — safe above typical MPEG frame size (~417 B at 128 kbps)
+
+_tts_client: AsyncOpenAI | None = None
+
+
+def _get_tts_client() -> AsyncOpenAI:
+    global _tts_client
+    if _tts_client is None:
+        api_key = settings.openai_tts_api_key or settings.openai_api_key
+        ctx = ssl.create_default_context()
+        if hasattr(ssl, "VERIFY_X509_STRICT"):
+            ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        _tts_client = AsyncOpenAI(
+            api_key=api_key,
+            http_client=httpx.AsyncClient(
+                verify=ctx,
+                timeout=120.0,
+            ),
+        )
+        key_source = "OPENAI_TTS_API_KEY" if settings.openai_tts_api_key else "OPENAI_API_KEY"
+        logger.info("OpenAI TTS client initialised (key source: %s)", key_source)
+    return _tts_client
 
 
 async def synthesize_stream(
@@ -35,7 +62,7 @@ async def synthesize_stream(
         logger.debug("openai_tts: empty text, skipping")
         return
 
-    client = get_client()
+    client = _get_tts_client()
     chunk_count = 0
     total_bytes = 0
 

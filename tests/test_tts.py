@@ -247,7 +247,7 @@ class TestOpenAISynthesizeStream:
         interrupt = asyncio.Event()
         mock_streaming = self._make_streaming_response(chunks)
 
-        with patch("app.services.tts_openai.get_client") as mock_get_client:
+        with patch("app.services.tts_openai._get_tts_client") as mock_get_client:
             mock_client = MagicMock()
             mock_client.audio.speech.with_streaming_response = mock_streaming
             mock_get_client.return_value = mock_client
@@ -276,7 +276,7 @@ class TestOpenAISynthesizeStream:
         mock_with_streaming = MagicMock()
         mock_with_streaming.create.return_value = mock_response
 
-        with patch("app.services.tts_openai.get_client") as mock_get_client:
+        with patch("app.services.tts_openai._get_tts_client") as mock_get_client:
             mock_client = MagicMock()
             mock_client.audio.speech.with_streaming_response = mock_with_streaming
             mock_get_client.return_value = mock_client
@@ -291,7 +291,7 @@ class TestOpenAISynthesizeStream:
 
         interrupt = asyncio.Event()
 
-        with patch("app.services.tts_openai.get_client") as mock_get_client:
+        with patch("app.services.tts_openai._get_tts_client") as mock_get_client:
             result = await _collect(synthesize_stream("   ", interrupt))
 
         mock_get_client.assert_not_called()
@@ -315,7 +315,7 @@ class TestOpenAISynthesizeStream:
         mock_with_streaming = MagicMock()
         mock_with_streaming.create.return_value = mock_response
 
-        with patch("app.services.tts_openai.get_client") as mock_get_client:
+        with patch("app.services.tts_openai._get_tts_client") as mock_get_client:
             mock_client = MagicMock()
             mock_client.audio.speech.with_streaming_response = mock_with_streaming
             mock_get_client.return_value = mock_client
