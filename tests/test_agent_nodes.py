@@ -213,6 +213,53 @@ class TestRespondNodeInterrupted:
 # should_navigate (conditional edge)
 # ---------------------------------------------------------------------------
 
+class TestRespondNodeNextSlideHint:
+    @pytest.mark.asyncio
+    async def test_injects_next_slide_hint_when_not_on_last_slide(self):
+        """respond_node should include next slide title in system prompt for non-last slides."""
+        state = _make_state(current_slide=0)
+        captured_system = []
+
+        async def capture_call(system, user_msg):
+            captured_system.append(system)
+            return "response"
+
+        with patch("app.agent.nodes.chat_completion", capture_call):
+            await respond_node(state)
+
+        system = captured_system[0]
+        # Slide 0 has a next slide — hint must appear
+        assert "{next_slide_hint}" not in system  # placeholder must be resolved
+        # The next slide title for clinical-trials slide 0 → slide 1 must be in the prompt
+        assert "AI-Powered" in system or "Recruitment" in system or "Patient" in system
+
+    @pytest.mark.asyncio
+    async def test_no_next_slide_hint_on_last_slide(self):
+        """On the last slide, next_slide_hint is empty — Option B rule is disabled."""
+        from app.slides.presentations import get_presentation
+        presentation = get_presentation("clinical-trials")
+        last_idx = len(presentation.slides) - 1
+
+        state = _make_state(current_slide=last_idx)
+        captured_system = []
+
+        async def capture_call(system, user_msg):
+            captured_system.append(system)
+            return "response"
+
+        with patch("app.agent.nodes.chat_completion", capture_call):
+            await respond_node(state)
+
+        system = captured_system[0]
+        assert "{next_slide_hint}" not in system
+        # On the last slide the hint placeholder resolves to empty string — no next title
+        assert "Option B" not in system or 'only when ""' not in system
+
+
+# ---------------------------------------------------------------------------
+# should_navigate (conditional edge)
+# ---------------------------------------------------------------------------
+
 class TestShouldNavigate:
     def test_returns_navigate_when_both_flags_set(self):
         state = _make_state(should_navigate=True, target_slide=2)

@@ -113,6 +113,15 @@ async def respond_node(state: AgentState) -> dict:
         )
     context_block = ("\n".join(context_lines) + "\n\n") if context_lines else ""
 
+    # Inject next slide hint for proactive turn-ending (Option B in RESPOND_SYSTEM).
+    # Only provided when a next slide exists; empty string disables the Option B rule.
+    next_idx = slide.index + 1
+    next_slide_hint = (
+        f'"{presentation.slides[next_idx].title}" '
+        if next_idx < len(presentation.slides)
+        else ""
+    )
+
     system = RESPOND_SYSTEM.format(
         presentation_title=presentation.meta.title,
         slide_index=slide.index,
@@ -120,6 +129,7 @@ async def respond_node(state: AgentState) -> dict:
         slide_bullets="\n".join(f"- {b}" for b in slide.bullets),
         speaker_notes=slide.speaker_notes,
         context_block=context_block,
+        next_slide_hint=next_slide_hint,
     )
 
     user_msg = f"User: {state['transcript']}"
