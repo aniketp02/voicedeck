@@ -9,10 +9,11 @@ Message protocol:
     {"type": "start", "presentation_id": "<optional id>"}
     {"type": "audio_chunk", "data": "<base64 PCM 16kHz mono int16>"}
     {"type": "interrupt"}
+    {"type": "navigate", "index": <int>}   # manual slide change (e.g. keyboard)
     {"type": "ping"}
 
   Server -> Client:
-    {"type": "transcript",   "text": "...", "is_final": bool}
+    {"type": "transcript",   "text": "...", "is_final": bool, "speech_final": bool}
     {"type": "slide_change", "index": N, "slide": {title, bullets}}
     {"type": "agent_text",   "text": "..."}
     {"type": "tts_chunk",    "data": "<base64 MP3>"}
@@ -35,6 +36,14 @@ from app.services.tts import synthesize_stream
 from app.slides.presentations import DEFAULT_PRESENTATION_ID, get_presentation
 
 logger = logging.getLogger(__name__)
+
+
+def should_dispatch_agent_turn(result: TranscriptResult) -> bool:
+    """
+    True when this STT result should trigger the LangGraph agent.
+    Uses speech_final (utterance end), not is_final (segment boundaries).
+    """
+    return bool(result.speech_final and result.text.strip())
 
 
 async def run_agent(
@@ -67,6 +76,7 @@ async def run_agent(
             "should_navigate",
             "response_text",
             "slide_changed",
+            "interrupted",
             "messages",
         ):
             if key in result:
@@ -161,15 +171,21 @@ async def handle_session(websocket: WebSocket) -> None:
             "type": "transcript",
             "text": result.text,
             "is_final": result.is_final,
+            "speech_final": result.speech_final,
         })
 
-        if not result.is_final or not result.text.strip():
+        if not should_dispatch_agent_turn(result):
             return
 
-        logger.info("Final transcript: %r (confidence=%.2f)", result.text, result.confidence)
+        logger.info(
+            "Speech final: %r (confidence=%.2f)",
+            result.text,
+            result.confidence,
+        )
 
         if agent_task and not agent_task.done():
             logger.info("Cancelling previous agent task for new utterance")
+            state["interrupted"] = True
             interrupt_event.set()
             agent_task.cancel()
             try:
@@ -205,6 +221,7 @@ async def handle_session(websocket: WebSocket) -> None:
 
             elif msg_type == "interrupt":
                 logger.info("Interrupt signal received from client")
+                state["interrupted"] = True
                 interrupt_event.set()
                 task_was_running = bool(agent_task and not agent_task.done())
                 if task_was_running:
@@ -245,6 +262,40 @@ async def handle_session(websocket: WebSocket) -> None:
                     presentation.meta.id,
                     presentation.meta.slide_count,
                 )
+
+            elif msg_type == "navigate":
+                # Client-initiated manual slide navigation (keyboard arrow keys).
+                target_index = msg.get("index")
+                if not isinstance(target_index, int):
+                    logger.warning("navigate message missing valid index: %r", msg)
+                else:
+                    presentation = get_presentation(state["presentation_id"])
+                    if not (0 <= target_index < len(presentation.slides)):
+                        logger.warning(
+                            "navigate index %d out of range for %d-slide presentation",
+                            target_index,
+                            len(presentation.slides),
+                        )
+                    else:
+                        if agent_task and not agent_task.done():
+                            interrupt_event.set()
+                            agent_task.cancel()
+                            try:
+                                await agent_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            interrupt_event.clear()
+                            await _send(websocket, {"type": "tts_done"})
+
+                        state["current_slide"] = target_index
+                        state["interrupted"] = False
+                        slide = presentation.slides[target_index]
+                        await _send(websocket, {
+                            "type": "slide_change",
+                            "index": target_index,
+                            "slide": {"title": slide.title, "bullets": slide.bullets},
+                        })
+                        logger.info("Manual navigation to slide %d", target_index)
 
             else:
                 logger.debug("Unknown message type: %r", msg_type)

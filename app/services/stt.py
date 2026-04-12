@@ -60,6 +60,7 @@ _patch_deepgram_listen_websocket_connect()
 class TranscriptResult:
     text: str
     is_final: bool
+    speech_final: bool = False
     confidence: float = 0.0
 
 
@@ -81,7 +82,7 @@ async def transcribe_stream(
             language=settings.deepgram_language,
             smart_format="true",
             interim_results="true",
-            utterance_end_ms=1000,
+            utterance_end_ms=1200,
             vad_events="true",
             encoding="linear16",
             sample_rate=16000,
@@ -100,13 +101,17 @@ async def transcribe_stream(
                         return
                     confidence = alternatives[0].confidence
                     is_final = bool(message.is_final)
+                    # speech_final fires once per utterance (after utterance_end_ms of silence).
+                    # is_final fires at internal segment boundaries (mid-sentence on breath pauses).
+                    speech_final = bool(getattr(message, "speech_final", False))
                     logger.debug(
-                        "Deepgram transcript: is_final=%s confidence=%.2f text=%r",
-                        is_final, confidence, sentence,
+                        "Deepgram transcript: is_final=%s speech_final=%s confidence=%.2f text=%r",
+                        is_final, speech_final, confidence, sentence,
                     )
                     await on_transcript(TranscriptResult(
                         text=sentence,
                         is_final=is_final,
+                        speech_final=speech_final,
                         confidence=float(confidence),
                     ))
                 except Exception as e:

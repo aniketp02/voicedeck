@@ -248,3 +248,59 @@ class TestRunAgent:
         slide_msg = next(m for m in ws.sent if m["type"] == "slide_change")
         assert slide_msg["index"] == 1
         assert slide_msg["slide"]["title"] == SLIDES[1].title
+
+
+class TestSpeechFinalGating:
+    """Agent dispatch uses speech_final (Deepgram utterance end), not is_final alone."""
+
+    def test_dispatch_requires_speech_final(self):
+        from app.api.websocket import should_dispatch_agent_turn
+        from app.services.stt import TranscriptResult
+
+        assert should_dispatch_agent_turn(
+            TranscriptResult(
+                text="hello",
+                is_final=True,
+                speech_final=True,
+                confidence=0.9,
+            )
+        )
+        assert not should_dispatch_agent_turn(
+            TranscriptResult(
+                text="hello",
+                is_final=True,
+                speech_final=False,
+                confidence=0.9,
+            )
+        )
+        assert not should_dispatch_agent_turn(
+            TranscriptResult(
+                text="   ",
+                is_final=True,
+                speech_final=True,
+                confidence=0.9,
+            )
+        )
+
+
+class TestNavigateMessage:
+    @pytest.mark.asyncio
+    async def test_navigate_sends_slide_change(self):
+        from app.api.websocket import handle_session
+
+        ws = MockWebSocket(
+            messages_to_receive=[
+                {"type": "start"},
+                {"type": "navigate", "index": 2},
+            ]
+        )
+
+        async def fake_transcribe(audio_queue, on_transcript):
+            await asyncio.sleep(0)
+
+        with patch("app.api.websocket.transcribe_stream", fake_transcribe):
+            await handle_session(ws)
+
+        by_index = {m["index"]: m for m in ws.sent if m["type"] == "slide_change"}
+        assert 0 in by_index
+        assert by_index[2]["slide"]["title"] == SLIDES[2].title

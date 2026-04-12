@@ -165,17 +165,20 @@ class TestRespondNode:
     @pytest.mark.asyncio
     async def test_includes_navigation_context_when_slide_changed(self):
         state = _make_state(current_slide=1, transcript="tell me about recruitment", slide_changed=True)
-        captured_user_msg = []
+        captured = []
 
         async def capture_call(system, user_msg):
-            captured_user_msg.append(user_msg)
+            captured.append((system, user_msg))
             return "Patient recruitment response"
 
         with patch("app.agent.nodes.chat_completion", capture_call):
             await respond_node(state)
 
-        assert len(captured_user_msg) == 1
-        assert "navigated" in captured_user_msg[0].lower() or "slide 1" in captured_user_msg[0]
+        assert len(captured) == 1
+        system, user_msg = captured[0]
+        assert "[CONTEXT:" in system
+        assert "just moved to this slide" in system.lower()
+        assert user_msg == "User: tell me about recruitment"
 
     @pytest.mark.asyncio
     async def test_resets_slide_changed_flag(self):
@@ -184,6 +187,26 @@ class TestRespondNode:
             result = await respond_node(state)
 
         assert result["slide_changed"] is False
+
+
+class TestRespondNodeInterrupted:
+    @pytest.mark.asyncio
+    async def test_resets_interrupted_flag_after_response(self):
+        """respond_node must return interrupted=False regardless of input."""
+        state = _make_state(current_slide=0, interrupted=True)
+        with patch("app.agent.nodes.chat_completion", AsyncMock(return_value="response")):
+            result = await respond_node(state)
+
+        assert result["interrupted"] is False
+
+    @pytest.mark.asyncio
+    async def test_non_interrupted_also_resets_flag(self):
+        """interrupted=False should also be returned when not interrupted."""
+        state = _make_state(current_slide=0, interrupted=False)
+        with patch("app.agent.nodes.chat_completion", AsyncMock(return_value="response")):
+            result = await respond_node(state)
+
+        assert result["interrupted"] is False
 
 
 # ---------------------------------------------------------------------------

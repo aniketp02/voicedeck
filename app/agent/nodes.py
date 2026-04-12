@@ -99,33 +99,43 @@ async def respond_node(state: AgentState) -> dict:
     presentation = get_presentation(state["presentation_id"])
     slide = presentation.slides[state["current_slide"]]
 
+    context_lines = []
+    if state.get("slide_changed"):
+        context_lines.append(
+            "[CONTEXT: You just moved to this slide in response to the user's question. "
+            "Introduce the new topic naturally — don't announce the navigation.]"
+        )
+    if state.get("interrupted"):
+        context_lines.append(
+            "[CONTEXT: The user spoke while you were mid-response. "
+            "Address their new question directly and naturally. "
+            "A brief 'Right —' pivot is acceptable; referencing the interruption mechanically is not.]"
+        )
+    context_block = ("\n".join(context_lines) + "\n\n") if context_lines else ""
+
     system = RESPOND_SYSTEM.format(
+        presentation_title=presentation.meta.title,
         slide_index=slide.index,
         slide_title=slide.title,
         slide_bullets="\n".join(f"- {b}" for b in slide.bullets),
         speaker_notes=slide.speaker_notes,
+        context_block=context_block,
     )
 
-    # Add navigation context if we just moved to this slide
-    nav_context = ""
-    if state.get("slide_changed"):
-        nav_context = (
-            f"[We just navigated to slide {slide.index} '{slide.title}' "
-            f"in response to the user's question.] "
-        )
-
-    user_msg = f"{nav_context}User: {state['transcript']}"
+    user_msg = f"User: {state['transcript']}"
 
     response_text = await chat_completion(system, user_msg)
     logger.info(
-        "respond_node: slide=%d generated %d chars",
+        "respond_node: slide=%d interrupted=%s generated %d chars",
         slide.index,
+        state.get("interrupted", False),
         len(response_text),
     )
 
     return {
         "response_text": response_text,
-        "slide_changed": False,  # reset for next turn
+        "slide_changed": False,
+        "interrupted": False,
     }
 
 
