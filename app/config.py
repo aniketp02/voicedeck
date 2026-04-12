@@ -24,10 +24,15 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"  # George — clear, professional
 
+    # OpenAI TTS (optional — only required when TTS_PROVIDER=openai)
+    openai_tts_voice: str = "nova"   # nova | alloy | echo | fable | onyx | shimmer
+    openai_tts_model: str = "tts-1"  # tts-1 | tts-1-hd
+
     # TTS provider selection
     # "elevenlabs" — high quality, requires ELEVENLABS_API_KEY (demo mode)
     # "deepgram"   — good quality, uses DEEPGRAM_API_KEY (dev/test mode, free credits)
-    tts_provider: Literal["elevenlabs", "deepgram"] = "elevenlabs"
+    # "openai"     — natural quality, uses OPENAI_API_KEY (no extra cost)
+    tts_provider: Literal["elevenlabs", "deepgram", "openai"] = "elevenlabs"
 
     # App
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]

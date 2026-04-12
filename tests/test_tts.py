@@ -215,3 +215,111 @@ class TestDeepgramSynthesizeStream:
 
             with pytest.raises(RuntimeError, match="HTTP 401"):
                 await _collect(synthesize_stream("Hello world", interrupt))
+
+
+# ---------------------------------------------------------------------------
+# OpenAI TTS provider (tts_openai.py)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAISynthesizeStream:
+    def _make_streaming_response(self, chunks: list[bytes]):
+        """Build a mock for client.audio.speech.with_streaming_response.create(...)."""
+        mock_response = AsyncMock()
+
+        async def fake_iter_bytes(chunk_size=8192):
+            for c in chunks:
+                yield c
+
+        mock_response.iter_bytes = fake_iter_bytes
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_with_streaming = MagicMock()
+        mock_with_streaming.create.return_value = mock_response
+        return mock_with_streaming
+
+    @pytest.mark.asyncio
+    async def test_yields_all_chunks(self):
+        from app.services.tts_openai import synthesize_stream
+
+        chunks = [b"audio1", b"audio2", b"audio3"]
+        interrupt = asyncio.Event()
+        mock_streaming = self._make_streaming_response(chunks)
+
+        with patch("app.services.tts_openai.get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.audio.speech.with_streaming_response = mock_streaming
+            mock_get_client.return_value = mock_client
+
+            result = await _collect(synthesize_stream("Hello world", interrupt))
+
+        assert result == chunks
+
+    @pytest.mark.asyncio
+    async def test_stops_on_interrupt(self):
+        from app.services.tts_openai import synthesize_stream
+
+        interrupt = asyncio.Event()
+        mock_response = AsyncMock()
+
+        async def fake_iter_bytes(chunk_size=8192):
+            yield b"chunk1"
+            interrupt.set()
+            yield b"chunk2"
+            yield b"chunk3"
+
+        mock_response.iter_bytes = fake_iter_bytes
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_with_streaming = MagicMock()
+        mock_with_streaming.create.return_value = mock_response
+
+        with patch("app.services.tts_openai.get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.audio.speech.with_streaming_response = mock_with_streaming
+            mock_get_client.return_value = mock_client
+
+            result = await _collect(synthesize_stream("Hello world", interrupt))
+
+        assert result == [b"chunk1"]
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_text(self):
+        from app.services.tts_openai import synthesize_stream
+
+        interrupt = asyncio.Event()
+
+        with patch("app.services.tts_openai.get_client") as mock_get_client:
+            result = await _collect(synthesize_stream("   ", interrupt))
+
+        mock_get_client.assert_not_called()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_chunks(self):
+        from app.services.tts_openai import synthesize_stream
+
+        interrupt = asyncio.Event()
+        mock_response = AsyncMock()
+
+        async def fake_iter_bytes(chunk_size=8192):
+            yield b""
+            yield b"real_chunk"
+
+        mock_response.iter_bytes = fake_iter_bytes
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_with_streaming = MagicMock()
+        mock_with_streaming.create.return_value = mock_response
+
+        with patch("app.services.tts_openai.get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.audio.speech.with_streaming_response = mock_with_streaming
+            mock_get_client.return_value = mock_client
+
+            result = await _collect(synthesize_stream("Hello", interrupt))
+
+        assert result == [b"real_chunk"]
