@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,14 +10,24 @@ class Settings(BaseSettings):
     openai_api_key: str
     openai_model: str = "gpt-4o-mini"
 
-    # Deepgram
+    # Deepgram (STT + optional TTS)
     deepgram_api_key: str
     deepgram_model: str = "nova-2"
     deepgram_language: str = "en-US"
+    deepgram_tts_voice: str = "aura-asteria-en"
+    # Deepgram HTTPS (httpx): Homebrew Python 3.14 often fails CA verification ("unable to get
+    # local issuer") even with certifi. Default False = verify=False (works locally). Set True in
+    # production when the host trust store validates api.deepgram.com.
+    deepgram_tts_ssl_verify: bool = False
 
-    # ElevenLabs
-    elevenlabs_api_key: str
+    # ElevenLabs (optional — only required when TTS_PROVIDER=elevenlabs)
+    elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"  # George — clear, professional
+
+    # TTS provider selection
+    # "elevenlabs" — high quality, requires ELEVENLABS_API_KEY (demo mode)
+    # "deepgram"   — good quality, uses DEEPGRAM_API_KEY (dev/test mode, free credits)
+    tts_provider: Literal["elevenlabs", "deepgram"] = "elevenlabs"
 
     # App
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
