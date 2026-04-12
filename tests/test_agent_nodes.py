@@ -4,8 +4,9 @@ All OpenAI calls are mocked — no API keys required.
 """
 import pytest
 from unittest.mock import AsyncMock, patch
+from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.nodes import understand_node, navigate_node, respond_node, should_navigate
+from app.agent.nodes import understand_node, navigate_node, respond_node, should_navigate, _format_history
 from app.agent.state import AgentState
 
 
@@ -19,6 +20,7 @@ def _make_state(**overrides) -> AgentState:
         "slide_changed": False,
         "interrupted": False,
         "should_navigate": False,
+        "end_session": False,
         "presentation_id": "clinical-trials",
     }
     base.update(overrides)
@@ -277,3 +279,118 @@ class TestShouldNavigate:
         # should not navigate if the flag wasn't set
         state = _make_state(should_navigate=False, target_slide=2)
         assert should_navigate(state) == "respond"
+
+
+# ---------------------------------------------------------------------------
+# _format_history
+# ---------------------------------------------------------------------------
+
+class TestFormatHistory:
+    def test_empty_messages_returns_empty_string(self):
+        assert _format_history([]) == ""
+
+    def test_only_human_message_returns_empty_string(self):
+        """Single human message (the current utterance) — no prior AI turns."""
+        msgs = [HumanMessage(content="hello")]
+        assert _format_history(msgs) == ""
+
+    def test_excludes_last_human_message_from_history(self):
+        """The current HumanMessage (last in list) must not appear in history."""
+        msgs = [
+            HumanMessage(content="first question"),
+            AIMessage(content="first answer"),
+            HumanMessage(content="current question"),
+        ]
+        result = _format_history(msgs)
+        assert "current question" not in result
+        assert "first question" in result
+        assert "first answer" in result
+
+    def test_formats_turns_correctly(self):
+        msgs = [
+            HumanMessage(content="What is this?"),
+            AIMessage(content="This is the overview."),
+            HumanMessage(content="Tell me more."),
+        ]
+        result = _format_history(msgs)
+        assert "User: What is this?" in result
+        assert "Assistant: This is the overview." in result
+        assert "=== CONVERSATION SO FAR ===" in result
+
+    def test_respects_limit(self):
+        """Only the last `limit` messages are included."""
+        msgs = []
+        for i in range(10):
+            msgs.append(HumanMessage(content=f"q{i}"))
+            msgs.append(AIMessage(content=f"a{i}"))
+        # Last message is the current utterance — excluded
+        msgs.append(HumanMessage(content="current"))
+        result = _format_history(msgs, limit=4)
+        # With limit=4 we keep msgs[-5:-1] = a7, q8, a8, q9 (indices into prior list)
+        assert "q0" not in result
+        assert "a0" not in result
+
+    def test_returns_empty_when_no_ai_turns_in_window(self):
+        """If the window contains only human messages, return empty."""
+        msgs = [HumanMessage(content="hello"), HumanMessage(content="current")]
+        assert _format_history(msgs, limit=4) == ""
+
+
+# ---------------------------------------------------------------------------
+# respond_node — conversation history injection
+# ---------------------------------------------------------------------------
+
+class TestRespondNodeConversationHistory:
+    @pytest.mark.asyncio
+    async def test_injects_history_when_prior_turns_exist(self):
+        msgs = [
+            HumanMessage(content="What's the main problem?"),
+            AIMessage(content="Trials are expensive and slow."),
+            HumanMessage(content="Why?"),  # current utterance
+        ]
+        state = _make_state(current_slide=0, messages=msgs, transcript="Why?")
+        captured_system = []
+
+        async def capture_call(system, user_msg, **kwargs):
+            captured_system.append(system)
+            return "response"
+
+        with patch("app.agent.nodes.chat_completion", capture_call):
+            await respond_node(state)
+
+        system = captured_system[0]
+        assert "=== CONVERSATION SO FAR ===" in system
+        assert "What's the main problem?" in system
+        assert "Trials are expensive and slow." in system
+        # Current utterance should NOT be duplicated in history block
+        assert system.count("Why?") <= 1
+
+    @pytest.mark.asyncio
+    async def test_no_history_block_on_first_exchange(self):
+        """First message only — no AI turns yet — history block must be absent."""
+        msgs = [HumanMessage(content="What is this?")]
+        state = _make_state(current_slide=0, messages=msgs, transcript="What is this?")
+        captured_system = []
+
+        async def capture_call(system, user_msg, **kwargs):
+            captured_system.append(system)
+            return "response"
+
+        with patch("app.agent.nodes.chat_completion", capture_call):
+            await respond_node(state)
+
+        assert "=== CONVERSATION SO FAR ===" not in captured_system[0]
+
+    @pytest.mark.asyncio
+    async def test_no_history_block_when_messages_empty(self):
+        state = _make_state(current_slide=0, messages=[], transcript="test")
+        captured_system = []
+
+        async def capture_call(system, user_msg, **kwargs):
+            captured_system.append(system)
+            return "response"
+
+        with patch("app.agent.nodes.chat_completion", capture_call):
+            await respond_node(state)
+
+        assert "=== CONVERSATION SO FAR ===" not in captured_system[0]

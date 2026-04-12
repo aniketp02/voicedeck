@@ -51,6 +51,7 @@ Slide content:
 Background knowledge (your source material — use it, never read it verbatim):
 {speaker_notes}
 
+{conversation_history}\
 {context_block}\
 === VOICE RESPONSE RULES — follow all of these ===
 

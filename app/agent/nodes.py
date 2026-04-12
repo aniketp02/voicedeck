@@ -9,10 +9,40 @@ import logging
 
 from app.agent.slide_target import normalize_slide_target
 from app.agent.state import AgentState
+from langchain_core.messages import AIMessage, HumanMessage
+
 from app.agent.prompts import understand_system, RESPOND_SYSTEM, SIGNOFF_SYSTEM
 from app.config import settings
 from app.services.llm import chat_completion, chat_completion_json
 from app.slides.presentations import get_presentation
+
+
+def _format_history(messages: list, limit: int = 8) -> str:
+    """
+    Format the last `limit` messages from the chat history as a readable
+    conversation block for injection into the system prompt.
+
+    Excludes the final HumanMessage (the current utterance — already shown
+    in the user message passed to the LLM). Returns an empty string when
+    there are no prior AI turns, so the prompt is clean on the first exchange.
+    """
+    # Drop the last message: it's always the current HumanMessage appended
+    # by run_agent before graph invocation — already in the user turn.
+    prior = messages[:-1] if messages else []
+    prior = prior[-limit:]
+
+    lines = []
+    for msg in prior:
+        if isinstance(msg, HumanMessage):
+            lines.append(f"User: {msg.content}")
+        elif isinstance(msg, AIMessage):
+            lines.append(f"Assistant: {msg.content}")
+
+    if not any(isinstance(m, AIMessage) for m in prior):
+        # No prior AI turns — don't inject an empty or human-only block
+        return ""
+
+    return "=== CONVERSATION SO FAR ===\n" + "\n".join(lines) + "\n\n"
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +173,8 @@ async def respond_node(state: AgentState) -> dict:
         else ""
     )
 
+    conversation_history = _format_history(state.get("messages", []))
+
     system = RESPOND_SYSTEM.format(
         presentation_title=presentation.meta.title,
         slide_index=slide.index,
@@ -151,6 +183,7 @@ async def respond_node(state: AgentState) -> dict:
         speaker_notes=slide.speaker_notes,
         context_block=context_block,
         next_slide_hint=next_slide_hint,
+        conversation_history=conversation_history,
     )
 
     user_msg = f"User: {state['transcript']}"
