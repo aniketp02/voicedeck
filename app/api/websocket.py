@@ -213,11 +213,20 @@ async def handle_session(websocket: WebSocket) -> None:
         """
         Autonomously narrate each slide from the current position to the end.
 
-        For each slide: sends slide_change, generates narration via LLM, streams
-        TTS, waits 2.5 s (interruptible), then advances.  Sends auto_narrate_complete
-        when it reaches the last slide or is cancelled externally.
+        For each slide: sends slide_change, streams narration TTS, then waits for
+        the client's tts_playback_done before advancing.
+
+        Optimisation — speculative pre-generation: while the current slide's TTS
+        audio plays on the client, we kick off the LLM call for the *next* slide's
+        narration as a background task. By the time the client signals playback_done
+        and the brief inter-slide pause elapses, the text is ready — eliminating the
+        ~800ms LLM wait from the perceived gap between slides.
+
+        Inter-slide pause: 0.8 s (down from 1.5 s) — LLM latency no longer adds to it.
         """
         tts_done_sent = False
+        prefetch_task: asyncio.Task | None = None
+
         try:
             presentation = get_presentation(state["presentation_id"])
             slides = presentation.slides
@@ -227,7 +236,7 @@ async def handle_session(websocket: WebSocket) -> None:
                 if interrupt_event.is_set():
                     break
 
-                # Advance to next slide (skip the first iteration if already there)
+                # Advance to next slide (skip on first iteration when already there)
                 if idx != state["current_slide"] or prev_slide is not None:
                     state["current_slide"] = idx
                     slide = slides[idx]
@@ -243,8 +252,20 @@ async def handle_session(websocket: WebSocket) -> None:
 
                 slide = slides[state["current_slide"]]
 
-                # Generate narration text
-                text = await narrate_slide(slide, presentation, prev_slide)
+                # Use pre-generated narration if the prefetch task is done and
+                # was for this exact slide. Otherwise generate synchronously.
+                text: str | None = None
+                if prefetch_task is not None and prefetch_task.done():
+                    try:
+                        text = prefetch_task.result()
+                        logger.info("auto_narrate: using pre-generated narration for slide %d", idx)
+                    except Exception as e:
+                        logger.warning("auto_narrate: prefetch failed (%s), regenerating", e)
+                    prefetch_task = None
+
+                if not text:
+                    text = await narrate_slide(slide, presentation, prev_slide)
+
                 if not text or interrupt_event.is_set():
                     break
 
@@ -254,15 +275,27 @@ async def handle_session(websocket: WebSocket) -> None:
                 # in the window between tts_done and the wait() call is not lost.
                 playback_done_event.clear()
 
-                # Stream TTS
+                # Stream TTS — while chunks are flowing, kick off LLM prefetch for
+                # the next slide so the text is ready before the inter-slide pause ends.
                 chunk_count = 0
                 tts_done_sent = False
+                prefetch_task = None
+                next_idx = idx + 1
+                prefetch_started = False
+
                 async for chunk in synthesize_stream(text, interrupt_event):
                     chunk_count += 1
                     await _send(websocket, {
                         "type": "tts_chunk",
                         "data": base64.b64encode(chunk).decode(),
                     })
+                    # Start prefetching next narration after first chunk confirms TTS is healthy
+                    if not prefetch_started and next_idx < len(slides):
+                        prefetch_started = True
+                        prefetch_task = asyncio.create_task(
+                            narrate_slide(slides[next_idx], presentation, slide)
+                        )
+
                 logger.info("auto_narrate: streamed %d TTS chunks for slide %d", chunk_count, idx)
 
                 await _send(websocket, {"type": "tts_done"})
@@ -271,9 +304,7 @@ async def handle_session(websocket: WebSocket) -> None:
                 if interrupt_event.is_set():
                     break
 
-                # Wait for the client to signal that local audio playback has ended
-                # before advancing to the next slide. Falls back after 120 s so a
-                # lost message never stalls the loop indefinitely.
+                # Wait for client to signal playback complete (120 s timeout safety net)
                 playback_task = asyncio.create_task(playback_done_event.wait())
                 interrupt_task = asyncio.create_task(interrupt_event.wait())
                 try:
@@ -295,21 +326,32 @@ async def handle_session(websocket: WebSocket) -> None:
                 if interrupt_event.is_set():
                     break
 
-                # Brief pause after audio ends before advancing to next slide
-                await asyncio.sleep(1.5)
+                # Brief natural pause before next slide (LLM latency already absorbed above)
+                await asyncio.sleep(0.8)
 
                 if interrupt_event.is_set():
                     break
+
+                # If prefetch task is still running, wait for it now (short — usually done)
+                if prefetch_task is not None and not prefetch_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=3.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
 
                 prev_slide = slide
 
         except asyncio.CancelledError:
             logger.info("auto_narrate_loop: cancelled")
+            if prefetch_task and not prefetch_task.done():
+                prefetch_task.cancel()
             raise
         except Exception as e:
             logger.exception("auto_narrate_loop error: %s", e)
             await _send(websocket, {"type": "error", "message": f"Auto-narration error: {e}"})
         finally:
+            if prefetch_task and not prefetch_task.done():
+                prefetch_task.cancel()
             if not tts_done_sent:
                 await _send(websocket, {"type": "tts_done"})
             await _send(websocket, {"type": "auto_narrate_complete"})

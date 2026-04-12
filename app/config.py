@@ -8,8 +8,8 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str
-    openai_model: str = "gpt-4.1-mini"
-    openai_understand_model: str = "gpt-4.1-nano"
+    openai_model: str = "gpt-4.1"           # respond_node: full model for best conversational quality
+    openai_understand_model: str = "gpt-4.1-nano"  # understand_node: nano is sufficient for JSON parsing
 
     # Deepgram (STT + optional TTS)
     deepgram_api_key: str
