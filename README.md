@@ -2,8 +2,8 @@
 
 A real-time voice-interactive presentation system. Ask questions, interrupt, navigate slides by speaking — the AI responds contextually and maintains conversation memory across the session.
 
-> **Demo video:** _coming soon_  
-> **Hosted demo:** _coming soon_
+> **Demo video:** [Watch on Loom](https://www.loom.com/share/a33ce9cc55544159bb34719ce0878f96)  
+> **Live demo:** [voicedeck-web.vercel.app](https://voicedeck-web.vercel.app)
 
 ---
 
@@ -171,12 +171,3 @@ pytest tests/ -v
 ```
 
 ---
-
-## Technical documentation
-
-Full architecture, sequence diagrams, and API reference in [`voicedeck-docs/technical/`](voicedeck-docs/technical/):
-
-- [`backend.md`](voicedeck-docs/technical/backend.md) — Agent graph, services, WebSocket handler
-- [`frontend.md`](voicedeck-docs/technical/frontend.md) — Hook architecture, MSE pipeline, VAD
-- [`protocol.md`](voicedeck-docs/technical/protocol.md) — WebSocket message protocol, audio format specs
-- [`sequences.md`](voicedeck-docs/technical/sequences.md) — Mermaid sequence diagrams for all flows
