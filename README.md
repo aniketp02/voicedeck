@@ -29,15 +29,32 @@ A real-time voice-interactive presentation system. Ask questions, interrupt, nav
 
 ### 1. Clone and configure
 
+This repository is the **backend**. Clone it next to the **voicedeck-web** frontend (same parent folder is convenient).
+
 ```bash
-git clone <repo-url>
-cd sythio-labs
+git clone https://github.com/aniketp02/voicedeck.git
+git clone https://github.com/aniketp02/voicedeck-web.git
+```
+
+Or use SSH:
+
+```bash
+git clone git@github.com:aniketp02/voicedeck.git
+git clone git@github.com:aniketp02/voicedeck-web.git
+```
+
+You should have:
+
+```text
+<parent>/
+├── voicedeck/       # this repo — FastAPI backend
+└── voicedeck-web/   # React + Vite SPA
 ```
 
 ### 2. Backend setup
 
 ```bash
-cd backend
+cd voicedeck
 
 # Create virtual environment
 python -m venv venv
@@ -62,7 +79,7 @@ TTS_PROVIDER=openai          # or "deepgram" or "elevenlabs"
 ### 3. Frontend setup
 
 ```bash
-cd frontend
+cd ../voicedeck-web
 npm install
 ```
 
@@ -71,11 +88,11 @@ npm install
 Open two terminals:
 
 ```bash
-# Terminal 1 — backend (from /backend)
+# Terminal 1 — backend (from voicedeck/)
 source venv/bin/activate
 uvicorn app.main:app --reload --port 8000
 
-# Terminal 2 — frontend (from /frontend)
+# Terminal 2 — frontend (from voicedeck-web/)
 npm run dev
 ```
 
@@ -127,7 +144,7 @@ Key settings in `.env` (see `.env.example` for full list):
 ## Running tests
 
 ```bash
-cd backend
+cd voicedeck
 source venv/bin/activate
 pytest tests/ -v
 ```
@@ -139,21 +156,18 @@ pytest tests/ -v
 ## Project structure
 
 ```
-sythio-labs/
-├── backend/            # FastAPI + LangGraph
+<root-folder>/
+├── voicedeck/            # FastAPI + LangGraph
 │   ├── app/
 │   │   ├── agent/      # LangGraph state machine (nodes, prompts, narrate)
 │   │   ├── api/        # WebSocket session handler
 │   │   ├── services/   # STT (Deepgram), TTS (3 providers), LLM (OpenAI)
 │   │   └── slides/     # Presentation content + registry
 │   └── tests/
-├── frontend/           # React 19 + TypeScript + Vite
-│   └── src/
-│       ├── hooks/      # useWebSocket, useAudioCapture, useAudioPlayer, useVoiceState
-│       └── components/ # SlideView, OrbPanel, Header, etc.
-├── voicedeck-docs/     # Technical documentation
-│   └── technical/      # backend.md, frontend.md, protocol.md, sequences.md
-└── plans/              # Implementation plan files
+├── voicedeck-web/           # React 19 + TypeScript + Vite
+    └── src/
+        ├── hooks/      # useWebSocket, useAudioCapture, useAudioPlayer, useVoiceState
+        └── components/ # SlideView, OrbPanel, Header, etc.
 ```
 
 ---
