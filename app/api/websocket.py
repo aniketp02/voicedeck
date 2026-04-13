@@ -348,16 +348,23 @@ async def handle_session(websocket: WebSocket) -> None:
                     break
 
                 # Wait for client to signal playback complete.
-                # No timeout — long narrations (60-120s of audio) would trigger a
-                # fixed timeout before audio ends, causing premature slide advances.
-                # Session disconnect cancels auto_narrate_task via handle_session cleanup.
+                # Timeout = 45s: enough for a 2-3 sentence narration (~15-25s audio)
+                # plus a ~20s buffer. Acts as a safety net if the client's audio.ended
+                # event doesn't fire (MSE/autoplay edge case in auto-narrate mode).
+                # On timeout, log a warning and advance — better than hanging forever.
                 playback_task = asyncio.create_task(playback_done_event.wait())
                 interrupt_task = asyncio.create_task(interrupt_event.wait())
                 try:
                     done, pending = await asyncio.wait(
                         {playback_task, interrupt_task},
-                        timeout=None,
+                        timeout=45.0,
                     )
+                    if not done:
+                        logger.warning(
+                            "auto_narrate: tts_playback_done not received after 45s for slide %d "
+                            "(client audio.ended may not have fired) — advancing anyway",
+                            idx,
+                        )
                     for t in pending:
                         t.cancel()
                         try:

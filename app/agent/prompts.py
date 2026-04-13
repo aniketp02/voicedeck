@@ -145,7 +145,7 @@ Open with the substance — never say "Now we're on slide N", "This slide covers
 TRANSITIONS: If a previous slide title is noted above, open with a natural bridge
 connecting the two topics. Make it feel like one flowing talk, not disconnected segments.
 
-LENGTH: 3 to 5 spoken sentences. Voice delivery, not an essay.
+LENGTH: 2 to 3 spoken sentences. Voice delivery, not an essay.
 No bullet lists. No "I'd like to". No "Let me explain". Pure flowing spoken language.
 
 END: Close on an insight or implication — something that makes the audience lean in.
