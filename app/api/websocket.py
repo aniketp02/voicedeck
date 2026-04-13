@@ -303,8 +303,10 @@ async def handle_session(websocket: WebSocket) -> None:
                 narration_parts: list[str] = []
 
                 if prefetched_text:
-                    # Prefetch available: TTS the full text, start new prefetch during streaming
+                    # Prefetch available: full text known upfront — send agent_text immediately
+                    # so orb/footer display text as soon as audio starts.
                     narration_parts = [prefetched_text]
+                    await _send(websocket, {"type": "agent_text", "text": prefetched_text})
                     async for chunk in synthesize_stream(prefetched_text, interrupt_event):
                         chunk_count += 1
                         await _send(websocket, {
@@ -317,11 +319,14 @@ async def handle_session(websocket: WebSocket) -> None:
                                 narrate_slide(slides[next_idx], presentation, slide)
                             )
                 else:
-                    # No prefetch: stream sentences → TTS each sentence
+                    # No prefetch: stream sentences → TTS each sentence.
+                    # Send cumulative agent_text before each sentence's TTS so the
+                    # orb and footer update incrementally (same pattern as run_agent).
                     async for sentence in narrate_slide_stream(slide, presentation, prev_slide):
                         if interrupt_event.is_set():
                             break
                         narration_parts.append(sentence)
+                        await _send(websocket, {"type": "agent_text", "text": " ".join(narration_parts)})
                         async for chunk in synthesize_stream(sentence, interrupt_event):
                             chunk_count += 1
                             await _send(websocket, {
@@ -334,10 +339,6 @@ async def handle_session(websocket: WebSocket) -> None:
                                     narrate_slide(slides[next_idx], presentation, slide)
                                 )
 
-                full_narration = " ".join(narration_parts)
-                if full_narration and not interrupt_event.is_set():
-                    await _send(websocket, {"type": "agent_text", "text": full_narration})
-
                 logger.info("auto_narrate: streamed %d TTS chunks for slide %d", chunk_count, idx)
 
                 await _send(websocket, {"type": "tts_done"})
@@ -346,13 +347,16 @@ async def handle_session(websocket: WebSocket) -> None:
                 if interrupt_event.is_set():
                     break
 
-                # Wait for client to signal playback complete (120 s timeout safety net)
+                # Wait for client to signal playback complete.
+                # No timeout — long narrations (60-120s of audio) would trigger a
+                # fixed timeout before audio ends, causing premature slide advances.
+                # Session disconnect cancels auto_narrate_task via handle_session cleanup.
                 playback_task = asyncio.create_task(playback_done_event.wait())
                 interrupt_task = asyncio.create_task(interrupt_event.wait())
                 try:
                     done, pending = await asyncio.wait(
                         {playback_task, interrupt_task},
-                        timeout=120.0,
+                        timeout=None,
                     )
                     for t in pending:
                         t.cancel()
